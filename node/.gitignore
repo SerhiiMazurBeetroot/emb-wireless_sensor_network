@@ -1,0 +1,71 @@
+/.metadata/
+
+# ==========================================
+# STM32 Build Artifacts & Output Directories
+# ==========================================
+# GNU Make / GCC / CMake outputs
+Build/
+build/
+bin/
+obj/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.d
+*.su
+
+# Keil MDK (uVision) outputs
+MDK-ARM/*.bak
+MDK-ARM/*.dep
+MDK-ARM/*.lst
+MDK-ARM/*.map
+MDK-ARM/*.uvgui.*
+MDK-ARM/*.uvoptx.bak
+MDK-ARM/*.htm
+MDK-ARM/*.build_log.htm
+MDK-ARM/*\ Build\ Log.htm
+MDK-ARM/RTE/
+
+# IAR Embedded Workbench outputs
+EWARM/*.dep
+EWARM/*.ewt
+EWARM/*.ewd
+EWARM/*.browse
+EWARM/settings/
+EWARM/Debug/
+EWARM/Release/
+
+# ==========================================
+# STM32CubeMX & STM32CubeIDE Specific
+# ==========================================
+# CubeMX backup file generated on code generation
+*.ioc.bak
+
+# STM32CubeIDE workspace indexer and debug configurations
+.settings/
+*.launch
+
+# Keep core project structure files for STM32CubeIDE/Eclipse
+!.project
+!.cproject
+
+# ==========================================
+# IDEs & Code Editors
+# ==========================================
+# VS Code
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+
+# CLion / JetBrains
+.idea/
+cmake-build-*/
+
+# macOS / OS Temp Files
+.DS_Store
+Thumbs.db
