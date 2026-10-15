@@ -1,5 +1,3 @@
-/.metadata/
-
 # ==========================================
 # STM32 Build Artifacts & Output Directories
 # ==========================================
@@ -43,6 +41,7 @@ EWARM/Release/
 # ==========================================
 # CubeMX backup file generated on code generation
 *.ioc.bak
+Debug/
 
 # STM32CubeIDE workspace indexer and debug configurations
 .settings/
