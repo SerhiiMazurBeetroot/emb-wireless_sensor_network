@@ -35,7 +35,8 @@ pytest_embedded_log/
 .idea/
 cmake-build-*/
 
-# Eclipse
+# Eclipse / CubeIDE workspace
+.metadata/
 .settings/
 .project
 .cproject
