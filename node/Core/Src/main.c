@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "nrf24.h"
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,7 +60,12 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static bool s_radio_ready;
 
+static void node_log(const char *text)
+{
+    HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)strlen(text), 100);
+}
 /* USER CODE END 0 */
 
 /**
@@ -94,8 +100,15 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  node_log("node: WSN node - step 2: send HELLO\r\n");
   nrf24_init();
-  nrf24_spi_probe();
+  s_radio_ready = nrf24_spi_probe();
+  if (s_radio_ready) {
+      nrf24_radio_init();
+      node_log("node: TX mode, channel 76\r\n");
+  } else {
+      node_log("node: SPI probe failed\r\n");
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -105,6 +118,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (s_radio_ready) {
+        const uint8_t hello[NRF24_PAYLOAD_LEN] = {'H', 'E', 'L', 'L', 'O'};
+        node_log(nrf24_send(hello, NRF24_PAYLOAD_LEN) ? "node: TX HELLO\r\n" : "node: TX FAIL\r\n");
+        HAL_Delay(1000);
+    }
   }
   /* USER CODE END 3 */
 }
