@@ -6,4 +6,5 @@ idf_component_register(
     REQUIRES 
     	nrf24
     	nvs_flash
+    	freertos
 )
