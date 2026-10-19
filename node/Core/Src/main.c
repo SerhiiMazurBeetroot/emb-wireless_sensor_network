@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "nrf24.h"
 #include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -60,12 +61,100 @@ static void MX_USART1_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+#define PKT_TYPE_DATA 0x01
+#define PKT_TYPE_ACK 0x02
+#define PKT_NODE_ID 1
+#define PKT_RETRY_MAX 3
+#define PKT_ACK_TIMEOUT_MS 50
+
 static bool s_radio_ready;
+static uint8_t s_seq;
+static uint8_t s_value;
 
 static void node_log(const char *text)
 {
     HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)strlen(text), 100);
 }
+
+/* CRC-8, poly 0x07, over the first 7 bytes of the 8-byte packet. */
+static uint8_t crc8(const uint8_t *data, uint8_t len) {
+    uint8_t crc = 0x00;
+
+    for(uint8_t i = 0; i < len; i++) {
+        crc ^=data[i];
+        for(uint8_t bit = 0; bit < 8; bit++) {
+            if(crc & 0x80) {
+                crc = (uint8_t)((crc << 1) ^ 0x07);
+            } else {
+                crc = (uint8_t)(crc << 1);
+            }
+        }
+    }
+
+    return crc;
+}
+
+static bool packet_crc_ok(const uint8_t *pkt)
+{
+	  return crc8(pkt, NRF24_PAYLOAD_LEN - 1) == pkt[NRF24_PAYLOAD_LEN - 1];
+}
+
+static void packet_build(uint8_t *pkt, uint8_t type, uint8_t node_id, uint8_t seq, uint8_t value) {
+    memset(pkt, 0, NRF24_PAYLOAD_LEN);
+    pkt[0] = type;
+    pkt[1] = node_id;
+    pkt[2] = seq;
+    pkt[3] = value;
+    pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
+}
+
+static bool ack_matches(const uint8_t *pkt, uint8_t seq) {
+	  return packet_crc_ok(pkt) && pkt[0] == PKT_TYPE_ACK && pkt[1] == PKT_NODE_ID && pkt[2] == seq;
+}
+
+/* Send one DATA packet. Retry the same seq until an ACK arrives or attempts run out. */
+static bool send_data(uint8_t seq, uint8_t value) {
+    uint8_t data[NRF24_PAYLOAD_LEN];
+    uint8_t rx[NRF24_PAYLOAD_LEN];
+    char buf[80];
+
+    packet_build(data, PKT_TYPE_DATA, PKT_NODE_ID, seq, value);
+
+    for (uint8_t attempt = 1; attempt <= PKT_RETRY_MAX; attempt++) {
+        snprintf(buf, sizeof(buf), "node: DATA seq=%u value=%u attempt=%u\r\n", seq, value, attempt);
+        node_log(buf);
+
+        if(!nrf24_send(data, NRF24_PAYLOAD_LEN)) {
+            node_log("node: TX FAIL\r\n");
+            continue;
+        }
+
+        nrf24_set_rx_mode();
+        uint32_t start = HAL_GetTick();
+        while((HAL_GetTick() - start) < PKT_ACK_TIMEOUT_MS) {
+            if(!nrf24_receive(rx, NRF24_PAYLOAD_LEN)) {
+                continue;
+            }
+
+          if(ack_matches(rx, seq)) {
+              snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", seq);
+              node_log(buf);
+              return true;
+          }
+
+          node_log("node: unexpected packet\r\n");
+        }
+
+      snprintf(buf, sizeof(buf), "node: timeout seq=%u attempt=%u\r\n", seq, attempt);
+      node_log(buf);
+    }
+
+    snprintf(buf, sizeof(buf), "node: no ACK seq=%u\r\n", seq);
+    node_log(buf);
+
+    return false;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -100,12 +189,12 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  node_log("node: WSN node - step 2: send HELLO\r\n");
+  node_log("node: WSN node - step 3: DATA + ACK\r\n");
   nrf24_init();
   s_radio_ready = nrf24_spi_probe();
   if (s_radio_ready) {
       nrf24_radio_init();
-      node_log("node: TX mode, channel 76\r\n");
+      node_log("node: channel 76, node_id 1\r\n");
   } else {
       node_log("node: SPI probe failed\r\n");
   }
@@ -119,8 +208,11 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     if (s_radio_ready) {
-        const uint8_t hello[NRF24_PAYLOAD_LEN] = {'H', 'E', 'L', 'L', 'O'};
-        node_log(nrf24_send(hello, NRF24_PAYLOAD_LEN) ? "node: TX HELLO\r\n" : "node: TX FAIL\r\n");
+        if(send_data(s_seq, s_value)) {
+            s_value++;
+        }
+        s_seq++;
+
         HAL_Delay(1000);
     }
   }
