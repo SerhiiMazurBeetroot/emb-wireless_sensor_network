@@ -190,7 +190,7 @@ void nrf24_radio_init(void) {
 										  NRF24_STATUS_MAX_RT);
 	nrf24_write_reg(NRF24_REG_CONFIG,
 					NRF24_CONFIG_EN_CRC | NRF24_CONFIG_PWR_UP);
-	vTaskDelay(pdMS_TO_TICKS(2));
+	vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 /* Drop CE and clear PWR_UP. The radio enters power-down. */
@@ -205,7 +205,7 @@ void nrf24_set_rx_mode(void) {
 	nrf24_write_reg(NRF24_REG_CONFIG, NRF24_CONFIG_EN_CRC |
 										  NRF24_CONFIG_PWR_UP |
 										  NRF24_CONFIG_PRIM_RX);
-	vTaskDelay(pdMS_TO_TICKS(2));
+	vTaskDelay(pdMS_TO_TICKS(10));
 	ce_high();
 }
 
@@ -214,7 +214,7 @@ void nrf24_set_tx_mode(void) {
 	ce_low();
 	nrf24_write_reg(NRF24_REG_CONFIG,
 					NRF24_CONFIG_EN_CRC | NRF24_CONFIG_PWR_UP);
-	vTaskDelay(pdMS_TO_TICKS(2));
+	vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 /* Send 5 bytes and wait for TX_DS. False when the radio sets MAX_RT or the wait times out. */
