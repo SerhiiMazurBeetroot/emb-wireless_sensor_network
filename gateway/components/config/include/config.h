@@ -18,3 +18,7 @@
 
 /* Shared with node later (RF_CH register value) */
 #define NRF24_RF_CHANNEL 76
+
+#define SSD1306_PIN_SDA GPIO_NUM_8
+#define SSD1306_PIN_SCL GPIO_NUM_9
+#define SSD1306_I2C_ADDR 0x3C

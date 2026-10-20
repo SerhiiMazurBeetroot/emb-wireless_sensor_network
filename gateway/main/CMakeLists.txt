@@ -7,4 +7,5 @@ idf_component_register(
     	nrf24
     	nvs_flash
     	freertos
+    	ssd1306
 )

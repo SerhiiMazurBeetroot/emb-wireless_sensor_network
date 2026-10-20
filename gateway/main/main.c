@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "nrf24.h"
 #include "nvs_flash.h"
+#include "ssd1306.h"
 
 static const char *TAG = "gateway";
 
@@ -63,13 +64,17 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_LOGI(TAG, "WSN gateway — step 5: sleep");
+    ESP_LOGI(TAG, "WSN gateway — step 7: OLED");
     ESP_ERROR_CHECK(nrf24_init());
 
     if (!nrf24_spi_probe()) {
 		ESP_LOGE(TAG, "SPI probe failed");
 		return;
     }
+	
+	if (!ssd1306_init()) {
+	    ESP_LOGE(TAG, "OLED init failed");
+	}
 	
 	nrf24_radio_init();
 	nrf24_set_rx_mode();
@@ -83,10 +88,12 @@ void app_main(void)
 		
 		if(!packet_crc_ok(rx)) {
 			ESP_LOGW(TAG, "bad CRC");
+			ssd1306_show_error("CRC");
 			continue;
 		}
 		
 		if(rx[0] != PKT_TYPE_DATA || rx[1] != PKT_NODE_ID) {
+			ssd1306_show_error("TYPE");
 			ESP_LOGW(TAG, "ignored type=0x%02X node=%u", rx[0], rx[1]);
 			continue;
 		}
@@ -99,7 +106,9 @@ void app_main(void)
 		ESP_LOGI(TAG, "DATA node=%u seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa%s",
 		                 rx[1], rx[2], (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
 		                 hum / 100, hum % 100, press, duplicate ? " duplicate" : "");
-		
+						 
+		ssd1306_show_node(rx[1], temp, hum, get_u16(&rx[9]), duplicate ? "DUP" : "OK");
+
 		last_seq = rx[2];
 		have_seq = true;
 		
