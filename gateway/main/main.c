@@ -63,7 +63,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_LOGI(TAG, "WSN gateway — step 4: BME280");
+    ESP_LOGI(TAG, "WSN gateway — step 5: sleep");
     ESP_ERROR_CHECK(nrf24_init());
 
     if (!nrf24_spi_probe()) {
