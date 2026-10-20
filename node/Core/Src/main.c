@@ -75,6 +75,7 @@ static void MX_RTC_Init(void);
 
 static bool s_radio_ready;
 static uint8_t s_seq;
+static uint32_t s_packets_lost;
 
 static void node_log(const char *text)
 {
@@ -135,9 +136,9 @@ static bool send_data(uint8_t seq, int16_t temp, uint16_t hum, uint16_t press) {
 
     for (uint8_t attempt = 1; attempt <= PKT_RETRY_MAX; attempt++) {
     	snprintf(buf, sizeof(buf),
-    	                 "node: DATA seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa attempt=%u\r\n",
-    	                 seq, (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
-    	                 hum / 100, hum % 100, press, attempt);
+    	                "node: DATA seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa retry %u/%u\r\n",
+                      seq, (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
+                      hum / 100, hum % 100, press, attempt, PKT_RETRY_MAX);
 		node_log(buf);
 
         if(!nrf24_send(data, NRF24_PAYLOAD_LEN)) {
@@ -171,41 +172,6 @@ static bool send_data(uint8_t seq, int16_t temp, uint16_t hum, uint16_t press) {
 	return false;
 }
 
-/* Start the internal 32 kHz oscillator and the RTC wakeup timer. */
-static void rtc_init(void) {
-	RCC_OscInitTypeDef osc = {0};
-	RCC_PeriphCLKInitTypeDef periph = {0};
-
-	__HAL_RCC_PWR_CLK_ENABLE();
-	HAL_PWR_EnableBkUpAccess();
-
-	osc.OscillatorType = RCC_OSCILLATORTYPE_LSI;
-	osc.LSIState = RCC_LSI_ON;
-	osc.PLL.PLLState = RCC_PLL_NONE;
-	if(HAL_RCC_OscConfig(&osc) != HAL_OK) {
-		Error_Handler();
-	}
-
-	periph.PeriphClockSelection = RCC_PERIPHCLK_RTC;
-	periph.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-	if(HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK) {
-		Error_Handler();
-	}
-
-	hrtc.Instance = RTC;
-	hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-	hrtc.Init.AsynchPrediv = 127;
-	hrtc.Init.SynchPrediv = 255;
-	hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-	hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-	hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-	if(HAL_RTC_Init(&hrtc) != HAL_OK) {
-		Error_Handler();
-	}
-
-	HAL_NVIC_SetPriority(RTC_WKUP_IRQn, 0, 0);
-	HAL_NVIC_EnableIRQ(RTC_WKUP_IRQn);
-}
 
 /* Power down the radio and wait about 10 s. LSI is not exact. */
 static void node_sleep(void) {
@@ -260,7 +226,7 @@ int main(void)
   MX_SPI1_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  node_log("node: WSN node - step 5: sleep\r\n");
+  node_log("node: WSN node - step 6: Retry & timeout\r\n");
   nrf24_init();
   s_radio_ready = nrf24_spi_probe();
   if (s_radio_ready) {
@@ -292,7 +258,13 @@ int main(void)
     	if (!bme280_read(&temp, &hum, &press)) {
         	node_log("node: BME280 read failed\r\n");
         } else {
-        	send_data(s_seq, temp, hum, press);
+        	char buf[40];
+            if (!send_data(s_seq, temp, hum, press)) {
+              s_packets_lost++;
+              snprintf(buf, sizeof(buf), "node: packets_lost=%lu\r\n",
+                     (unsigned long)s_packets_lost);
+              node_log(buf);
+            }
         }
         s_seq++;
     }
