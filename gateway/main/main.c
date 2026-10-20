@@ -14,7 +14,7 @@ static const char *TAG = "gateway";
 #define PKT_TYPE_ACK 0x02
 #define PKT_NODE_ID 1
 
-/* CRC-8, poly 0x07, over the first 7 bytes of the 8-byte packet. */
+/* CRC-8, poly 0x07, over every byte except the last one. */
 static uint8_t crc8(const uint8_t *data, uint8_t len) {
 	uint8_t crc = 0x00;
 	
@@ -36,17 +36,19 @@ static bool packet_crc_ok(const uint8_t *pkt) {
 	return crc8(pkt, NRF24_PAYLOAD_LEN - 1) == pkt[NRF24_PAYLOAD_LEN - 1];
 }
 
-static void packet_build(uint8_t *pkt, uint8_t type, uint8_t node_id, uint8_t seq, uint8_t value) {
-	memset(pkt, 0, NRF24_PAYLOAD_LEN);
-	pkt[0] = type;
-	pkt[1] = node_id;
-	pkt[2] = seq;
-	pkt[3] = value;
+static void packet_seal(uint8_t *pkt) {
 	pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
 }
 
+static int16_t get_i16(const uint8_t *p) {
+	return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
 
-/* Receive DATA, check CRC and address, answer with ACK, then listen again. */
+static uint16_t get_u16(const uint8_t *p) {
+	return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+/* Receive a sensor packet, check CRC and address, answer with ACK, then listen again. */
 void app_main(void)
 {
 	uint8_t rx[NRF24_PAYLOAD_LEN];
@@ -61,7 +63,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
-    ESP_LOGI(TAG, "WSN gateway — step 3: DATA + ACK");
+    ESP_LOGI(TAG, "WSN gateway — step 4: BME280");
     ESP_ERROR_CHECK(nrf24_init());
 
     if (!nrf24_spi_probe()) {
@@ -90,12 +92,24 @@ void app_main(void)
 		}
 		
 		const bool duplicate = have_seq && rx[2] == last_seq;
-		ESP_LOGI(TAG, "DATA node=%u seq=%u value=%u%s", rx[1], rx[2], rx[3], duplicate ? " duplicate" : "");
+		const int16_t temp = get_i16(&rx[3]);
+		const int16_t hum = get_u16(&rx[5]);
+		const int16_t press = get_u16(&rx[7]);
+		const int16_t t_abs = (temp < 0) ? (int16_t)(-temp) : temp;
+		ESP_LOGI(TAG, "DATA node=%u seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa%s",
+		                 rx[1], rx[2], (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
+		                 hum / 100, hum % 100, press, duplicate ? " duplicate" : "");
+		
 		last_seq = rx[2];
 		have_seq = true;
 		
-		packet_build(ack, PKT_TYPE_ACK, rx[1], rx[2], 0);
+		memset(ack, 0, sizeof(ack));
+		ack[0] = PKT_TYPE_ACK;
+		ack[1] = rx[1];
+		ack[2] = rx[2];
+		packet_seal(ack);
 		vTaskDelay(pdMS_TO_TICKS(10));
+
 		if(nrf24_send(ack, NRF24_PAYLOAD_LEN)) {
 			ESP_LOGI(TAG, "ACK seq=%u", rx[2]);
 		} else {
