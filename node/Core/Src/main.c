@@ -18,11 +18,11 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "nrf24.h"
-#include "bme280.h"
+#include "node.h"
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -50,6 +50,13 @@ SPI_HandleTypeDef hspi2;
 
 UART_HandleTypeDef huart1;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -61,134 +68,14 @@ static void MX_SPI2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_RTC_Init(void);
+void StartDefaultTask(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define PKT_TYPE_DATA 0x01
-#define PKT_TYPE_ACK 0x02
-#define PKT_NODE_ID 1
-#define PKT_RETRY_MAX 3
-#define PKT_ACK_TIMEOUT_MS 50
-
-static bool s_radio_ready;
-static uint8_t s_seq;
-static uint32_t s_packets_lost;
-
-static void node_log(const char *text)
-{
-    HAL_UART_Transmit(&huart1, (uint8_t *)text, (uint16_t)strlen(text), 100);
-}
-
-/* CRC-8, poly 0x07, over the first 7 bytes of the 8-byte packet. */
-static uint8_t crc8(const uint8_t *data, uint8_t len) {
-    uint8_t crc = 0x00;
-
-    for(uint8_t i = 0; i < len; i++) {
-        crc ^=data[i];
-        for(uint8_t bit = 0; bit < 8; bit++) {
-            if(crc & 0x80) {
-                crc = (uint8_t)((crc << 1) ^ 0x07);
-            } else {
-                crc = (uint8_t)(crc << 1);
-            }
-        }
-    }
-
-    return crc;
-}
-
-static bool packet_crc_ok(const uint8_t *pkt)
-{
-	  return crc8(pkt, NRF24_PAYLOAD_LEN - 1) == pkt[NRF24_PAYLOAD_LEN - 1];
-}
-
-static void put_u16(uint8_t *p, uint16_t value) {
-    p[0] = (uint8_t)value;
-    p[1] = (uint8_t)(value >> 8);
-}
-
-static void packet_seal(uint8_t *pkt) {
-	pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
-}
-
-static bool ack_matches(const uint8_t *pkt, uint8_t seq) {
-	  return packet_crc_ok(pkt) && pkt[0] == PKT_TYPE_ACK && pkt[1] == PKT_NODE_ID && pkt[2] == seq;
-}
-
-/* Send one sensor sample. Retry the same seq until an ACK arrives or attempts run out. */
-static bool send_data(uint8_t seq, int16_t temp, uint16_t hum, uint16_t press) {
-    uint8_t data[NRF24_PAYLOAD_LEN];
-    uint8_t rx[NRF24_PAYLOAD_LEN];
-    char buf[96];
-    uint16_t t_abs = (temp < 0) ? (int16_t)(-temp) : temp;
-
-    memset(data, 0, sizeof(data));
-    data[0] = PKT_TYPE_DATA;
-    data[1] = PKT_NODE_ID;
-    data[2] = seq;
-    put_u16(&data[3], (uint16_t)temp);
-    put_u16(&data[5], hum);
-    put_u16(&data[7], press);
-    packet_seal(data);
-
-    for (uint8_t attempt = 1; attempt <= PKT_RETRY_MAX; attempt++) {
-    	snprintf(buf, sizeof(buf),
-    	                "node: DATA seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa retry %u/%u\r\n",
-                      seq, (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
-                      hum / 100, hum % 100, press, attempt, PKT_RETRY_MAX);
-		node_log(buf);
-
-        if(!nrf24_send(data, NRF24_PAYLOAD_LEN)) {
-            node_log("node: TX FAIL\r\n");
-            continue;
-        }
-
-        nrf24_set_rx_mode();
-        uint32_t start = HAL_GetTick();
-        while((HAL_GetTick() - start) < PKT_ACK_TIMEOUT_MS) {
-            if(!nrf24_receive(rx, NRF24_PAYLOAD_LEN)) {
-                continue;
-            }
-
-            if(ack_matches(rx, seq)) {
-                snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", seq);
-                node_log(buf);
-                return true;
-            }
-
-            node_log("node: unexpected packet\r\n");
-        }
-
-        snprintf(buf, sizeof(buf), "node: timeout seq=%u attempt=%u\r\n", seq, attempt);
-        node_log(buf);
-    }
-
-    snprintf(buf, sizeof(buf), "node: no ACK seq=%u\r\n", seq);
-	node_log(buf);
-
-	return false;
-}
-
-
-/* Power down the radio and wait about 10 s. LSI is not exact. */
-static void node_sleep(void) {
-	node_log("node: sleep 10 s\r\n");
-	nrf24_power_down();
-
-	if(HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 9, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) {
-		Error_Handler();
-	}
-
-	HAL_SuspendTick();
-	HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
-	HAL_ResumeTick();
-
-	SystemClock_Config();
-	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-}
 
 /* USER CODE END 0 */
 
@@ -226,22 +113,45 @@ int main(void)
   MX_SPI1_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  node_log("node: WSN node - step 6: Retry & timeout\r\n");
-  nrf24_init();
-  s_radio_ready = nrf24_spi_probe();
-  if (s_radio_ready) {
-      nrf24_radio_init();
-      node_log("node: channel 76, node_id 1\r\n");
-  } else {
-      node_log("node: SPI probe failed\r\n");
-  }
-
-  if(!bme280_init()) {
-	  node_log("node: BME280 not found\r\n");
-	  s_radio_ready = false;
-  }
 
   /* USER CODE END 2 */
+
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  node_start();
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -250,25 +160,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (s_radio_ready) {
-    	int16_t temp = 0;
-    	uint16_t hum = 0;
-    	uint16_t press = 0;
 
-    	if (!bme280_read(&temp, &hum, &press)) {
-        	node_log("node: BME280 read failed\r\n");
-        } else {
-        	char buf[40];
-            if (!send_data(s_seq, temp, hum, press)) {
-              s_packets_lost++;
-              snprintf(buf, sizeof(buf), "node: packets_lost=%lu\r\n",
-                     (unsigned long)s_packets_lost);
-              node_log(buf);
-            }
-        }
-        s_seq++;
-    }
-    node_sleep();
   }
   /* USER CODE END 3 */
 }
@@ -517,6 +409,46 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM5 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM5)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
