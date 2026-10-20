@@ -43,6 +43,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+RTC_HandleTypeDef hrtc;
+
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 
@@ -58,6 +60,7 @@ static void MX_GPIO_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_SPI1_Init(void);
+static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -168,6 +171,59 @@ static bool send_data(uint8_t seq, int16_t temp, uint16_t hum, uint16_t press) {
 	return false;
 }
 
+/* Start the internal 32 kHz oscillator and the RTC wakeup timer. */
+static void rtc_init(void) {
+	RCC_OscInitTypeDef osc = {0};
+	RCC_PeriphCLKInitTypeDef periph = {0};
+
+	__HAL_RCC_PWR_CLK_ENABLE();
+	HAL_PWR_EnableBkUpAccess();
+
+	osc.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+	osc.LSIState = RCC_LSI_ON;
+	osc.PLL.PLLState = RCC_PLL_NONE;
+	if(HAL_RCC_OscConfig(&osc) != HAL_OK) {
+		Error_Handler();
+	}
+
+	periph.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+	periph.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+	if(HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK) {
+		Error_Handler();
+	}
+
+	hrtc.Instance = RTC;
+	hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+	hrtc.Init.AsynchPrediv = 127;
+	hrtc.Init.SynchPrediv = 255;
+	hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+	hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+	hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+	if(HAL_RTC_Init(&hrtc) != HAL_OK) {
+		Error_Handler();
+	}
+
+	HAL_NVIC_SetPriority(RTC_WKUP_IRQn, 0, 0);
+	HAL_NVIC_EnableIRQ(RTC_WKUP_IRQn);
+}
+
+/* Power down the radio and wait about 10 s. LSI is not exact. */
+static void node_sleep(void) {
+	node_log("node: sleep 10 s\r\n");
+	nrf24_power_down();
+
+	if(HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 9, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) {
+		Error_Handler();
+	}
+
+	HAL_SuspendTick();
+	HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+	HAL_ResumeTick();
+
+	SystemClock_Config();
+	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -202,8 +258,9 @@ int main(void)
   MX_SPI2_Init();
   MX_USART1_UART_Init();
   MX_SPI1_Init();
+  MX_RTC_Init();
   /* USER CODE BEGIN 2 */
-  node_log("node: WSN node - step 4: BME280\r\n");
+  node_log("node: WSN node - step 5: sleep\r\n");
   nrf24_init();
   s_radio_ready = nrf24_spi_probe();
   if (s_radio_ready) {
@@ -217,6 +274,7 @@ int main(void)
 	  node_log("node: BME280 not found\r\n");
 	  s_radio_ready = false;
   }
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -237,9 +295,8 @@ int main(void)
         	send_data(s_seq, temp, hum, press);
         }
         s_seq++;
-
-        HAL_Delay(1000);
     }
+    node_sleep();
   }
   /* USER CODE END 3 */
 }
@@ -261,9 +318,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -283,6 +341,76 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief RTC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_RTC_Init(void)
+{
+
+  /* USER CODE BEGIN RTC_Init 0 */
+
+  /* USER CODE END RTC_Init 0 */
+
+  RTC_TimeTypeDef sTime = {0};
+  RTC_DateTypeDef sDate = {0};
+
+  /* USER CODE BEGIN RTC_Init 1 */
+
+  /* USER CODE END RTC_Init 1 */
+
+  /** Initialize RTC Only
+  */
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* USER CODE BEGIN Check_RTC_BKUP */
+
+  /* USER CODE END Check_RTC_BKUP */
+
+  /** Initialize RTC and set the Time and Date
+  */
+  sTime.Hours = 0x0;
+  sTime.Minutes = 0x0;
+  sTime.Seconds = 0x0;
+  sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+  sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+  if (HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+  sDate.Month = RTC_MONTH_JANUARY;
+  sDate.Date = 0x1;
+  sDate.Year = 0x0;
+
+  if (HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BCD) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Enable the WakeUp
+  */
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN RTC_Init 2 */
+
+  /* USER CODE END RTC_Init 2 */
+
 }
 
 /**
