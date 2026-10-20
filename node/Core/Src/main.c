@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "nrf24.h"
+#include "bme280.h"
 #include <string.h>
 #include <stdio.h>
 /* USER CODE END Includes */
@@ -42,6 +43,7 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
 
 UART_HandleTypeDef huart1;
@@ -55,6 +57,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -69,7 +72,6 @@ static void MX_USART1_UART_Init(void);
 
 static bool s_radio_ready;
 static uint8_t s_seq;
-static uint8_t s_value;
 
 static void node_log(const char *text)
 {
@@ -99,30 +101,41 @@ static bool packet_crc_ok(const uint8_t *pkt)
 	  return crc8(pkt, NRF24_PAYLOAD_LEN - 1) == pkt[NRF24_PAYLOAD_LEN - 1];
 }
 
-static void packet_build(uint8_t *pkt, uint8_t type, uint8_t node_id, uint8_t seq, uint8_t value) {
-    memset(pkt, 0, NRF24_PAYLOAD_LEN);
-    pkt[0] = type;
-    pkt[1] = node_id;
-    pkt[2] = seq;
-    pkt[3] = value;
-    pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
+static void put_u16(uint8_t *p, uint16_t value) {
+    p[0] = (uint8_t)value;
+    p[1] = (uint8_t)(value >> 8);
+}
+
+static void packet_seal(uint8_t *pkt) {
+	pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
 }
 
 static bool ack_matches(const uint8_t *pkt, uint8_t seq) {
 	  return packet_crc_ok(pkt) && pkt[0] == PKT_TYPE_ACK && pkt[1] == PKT_NODE_ID && pkt[2] == seq;
 }
 
-/* Send one DATA packet. Retry the same seq until an ACK arrives or attempts run out. */
-static bool send_data(uint8_t seq, uint8_t value) {
+/* Send one sensor sample. Retry the same seq until an ACK arrives or attempts run out. */
+static bool send_data(uint8_t seq, int16_t temp, uint16_t hum, uint16_t press) {
     uint8_t data[NRF24_PAYLOAD_LEN];
     uint8_t rx[NRF24_PAYLOAD_LEN];
-    char buf[80];
+    char buf[96];
+    uint16_t t_abs = (temp < 0) ? (int16_t)(-temp) : temp;
 
-    packet_build(data, PKT_TYPE_DATA, PKT_NODE_ID, seq, value);
+    memset(data, 0, sizeof(data));
+    data[0] = PKT_TYPE_DATA;
+    data[1] = PKT_NODE_ID;
+    data[2] = seq;
+    put_u16(&data[3], (uint16_t)temp);
+    put_u16(&data[5], hum);
+    put_u16(&data[7], press);
+    packet_seal(data);
 
     for (uint8_t attempt = 1; attempt <= PKT_RETRY_MAX; attempt++) {
-        snprintf(buf, sizeof(buf), "node: DATA seq=%u value=%u attempt=%u\r\n", seq, value, attempt);
-        node_log(buf);
+    	snprintf(buf, sizeof(buf),
+    	                 "node: DATA seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa attempt=%u\r\n",
+    	                 seq, (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
+    	                 hum / 100, hum % 100, press, attempt);
+		node_log(buf);
 
         if(!nrf24_send(data, NRF24_PAYLOAD_LEN)) {
             node_log("node: TX FAIL\r\n");
@@ -136,23 +149,23 @@ static bool send_data(uint8_t seq, uint8_t value) {
                 continue;
             }
 
-          if(ack_matches(rx, seq)) {
-              snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", seq);
-              node_log(buf);
-              return true;
-          }
+            if(ack_matches(rx, seq)) {
+                snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", seq);
+                node_log(buf);
+                return true;
+            }
 
-          node_log("node: unexpected packet\r\n");
+            node_log("node: unexpected packet\r\n");
         }
 
-      snprintf(buf, sizeof(buf), "node: timeout seq=%u attempt=%u\r\n", seq, attempt);
-      node_log(buf);
+        snprintf(buf, sizeof(buf), "node: timeout seq=%u attempt=%u\r\n", seq, attempt);
+        node_log(buf);
     }
 
     snprintf(buf, sizeof(buf), "node: no ACK seq=%u\r\n", seq);
-    node_log(buf);
+	node_log(buf);
 
-    return false;
+	return false;
 }
 
 /* USER CODE END 0 */
@@ -188,8 +201,9 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI2_Init();
   MX_USART1_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  node_log("node: WSN node - step 3: DATA + ACK\r\n");
+  node_log("node: WSN node - step 4: BME280\r\n");
   nrf24_init();
   s_radio_ready = nrf24_spi_probe();
   if (s_radio_ready) {
@@ -197,6 +211,11 @@ int main(void)
       node_log("node: channel 76, node_id 1\r\n");
   } else {
       node_log("node: SPI probe failed\r\n");
+  }
+
+  if(!bme280_init()) {
+	  node_log("node: BME280 not found\r\n");
+	  s_radio_ready = false;
   }
   /* USER CODE END 2 */
 
@@ -208,8 +227,14 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     if (s_radio_ready) {
-        if(send_data(s_seq, s_value)) {
-            s_value++;
+    	int16_t temp = 0;
+    	uint16_t hum = 0;
+    	uint16_t press = 0;
+
+    	if (!bme280_read(&temp, &hum, &press)) {
+        	node_log("node: BME280 read failed\r\n");
+        } else {
+        	send_data(s_seq, temp, hum, press);
         }
         s_seq++;
 
@@ -258,6 +283,44 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
 /**
@@ -343,8 +406,8 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
