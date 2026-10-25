@@ -162,17 +162,28 @@ void ssd1306_show_error(const char *reason)
     fb_flush();
 }
 
-void ssd1306_show_network_stats(const ssd1306_node_stat_t *stats)
-{
+void ssd1306_show_link_stats(uint32_t rx, uint32_t tx, uint32_t lost,
+                             uint32_t retries, uint32_t crc_err, uint32_t unknown,
+                             uint32_t n1_rx, uint32_t n2_rx) {
 	char line[22];
 
 	fb_clear();
-	fb_text(0, 0, "NET STATS");
-	for (uint8_t id = 1; id <= 2; id++) {
-		snprintf(line, sizeof(line), "N%u RX%lu D%lu", id,
-		         (unsigned long)stats[id].rx_count,
-		         (unsigned long)stats[id].duplicates);
-		fb_text(0, (int)(id * 2), line);
-	}
+	/* One page per row: glyph is 7px, so bit 7 leaves a 1px gap. */
+	snprintf(line, sizeof(line), "PKT %lu", (unsigned long)rx);
+	fb_text(0, 0, line);
+	snprintf(line, sizeof(line), "ACK %lu", (unsigned long)tx);
+	fb_text(0, 1, line);
+	snprintf(line, sizeof(line), "LOST %lu", (unsigned long)lost);
+	fb_text(0, 2, line);
+	snprintf(line, sizeof(line), "RETRY %lu", (unsigned long)retries);
+	fb_text(0, 3, line);
+	snprintf(line, sizeof(line), "CRC %lu", (unsigned long)crc_err);
+	fb_text(0, 4, line);
+	snprintf(line, sizeof(line), "OTHER %lu", (unsigned long)unknown);
+	fb_text(0, 5, line);
+	snprintf(line, sizeof(line), "NODE1 PKT %lu", (unsigned long)n1_rx);
+	fb_text(0, 6, line);
+	snprintf(line, sizeof(line), "NODE2 PKT %lu", (unsigned long)n2_rx);
+	fb_text(0, 7, line);
 	fb_flush();
 }

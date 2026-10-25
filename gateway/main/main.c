@@ -11,6 +11,7 @@
 #include "nrf24.h"
 #include "nvs_flash.h"
 #include "ssd1306.h"
+#include "statistics.h"
 
 static const char *TAG = "gateway";
 
@@ -21,7 +22,6 @@ static const char *TAG = "gateway";
 /* Min interval between full OLED redraws (I2C + snprintf blocks IDLE). */
 #define OLED_MIN_INTERVAL_US 300000
 
-static ssd1306_node_stat_t s_nodes[PKT_NODE_ID_MAX + 1];
 static int64_t s_last_oled_us;
 
 /* CRC-8, poly 0x07, over bytes 0..(NRF24_PAYLOAD_LEN - 2). */
@@ -69,7 +69,7 @@ void app_main(void) {
 	}
 	ESP_ERROR_CHECK(err);
 
-	ESP_LOGI(TAG, "WSN gateway — step 13: multi-node");
+	ESP_LOGI(TAG, "WSN gateway — step 14: statistics");
 	ESP_ERROR_CHECK(nrf24_init());
 
 	if (!nrf24_spi_probe()) {
@@ -80,6 +80,8 @@ void app_main(void) {
 	if (!ssd1306_init()) {
 		ESP_LOGE(TAG, "OLED init failed");
 	}
+	
+	statistics_init();
 
 	nrf24_radio_init();
 	QueueHandle_t rx_q = xQueueCreate(8, NRF24_PAYLOAD_LEN);
@@ -95,15 +97,23 @@ void app_main(void) {
 		if (xQueueReceive(rx_q, rx, portMAX_DELAY) != pdTRUE) {
 			continue;
 		}
+
 		if (!packet_crc_ok(rx)) {
+			statistics_on_crc();
+			statistics_log();
 			ESP_LOGW(TAG, "bad CRC");
+
 			if ((esp_timer_get_time() - s_last_oled_us) >= OLED_MIN_INTERVAL_US) {
 				ssd1306_show_error("CRC");
 				s_last_oled_us = esp_timer_get_time();
 			}
 			continue;
 		}
+		
 		if (rx[0] != PKT_TYPE_DATA || rx[1] < PKT_NODE_ID_MIN || rx[1] > PKT_NODE_ID_MAX) {
+			statistics_on_unknown(rx[0], rx[1]);
+			statistics_log();
+
 			if ((esp_timer_get_time() - s_last_oled_us) >= OLED_MIN_INTERVAL_US) {
 				ssd1306_show_error("TYPE");
 				s_last_oled_us = esp_timer_get_time();
@@ -111,28 +121,29 @@ void app_main(void) {
 			ESP_LOGW(TAG, "ignored type=0x%02X node=%u", rx[0], rx[1]);
 			continue;
 		}
+
 		const uint8_t nid = rx[1];
-		ssd1306_node_stat_t *st = &s_nodes[nid];
-		const bool duplicate = st->have_seq && rx[2] == st->last_seq;
+		const bool duplicate = statistics_on_data(nid, rx[2]);
 		memset(ack, 0, sizeof(ack));
 		ack[0] = PKT_TYPE_ACK;
 		ack[1] = rx[1];
 		ack[2] = rx[2];
 		packet_seal(ack);
-		if (nrf24_send(ack, NRF24_PAYLOAD_LEN)) {
+		const bool ack_ok = nrf24_send(ack, NRF24_PAYLOAD_LEN);
+		statistics_on_ack(nid, ack_ok);
+		if (ack_ok) {
 			ESP_LOGI(TAG, "ACK seq=%u node=%u", rx[2], nid);
 		} else {
+			statistics_log();
 			ESP_LOGW(TAG, "ACK send failed seq=%u", rx[2]);
 		}
+		
 		nrf24_set_rx_mode();
-		st->rx_count++;
-		if (duplicate) {
-			st->duplicates++;
-		}
 		const int16_t temp = get_i16(&rx[3]);
 		const uint16_t hum = get_u16(&rx[5]);
 		const uint16_t press = get_u16(&rx[7]);
 		const int16_t t_abs = (temp < 0) ? (int16_t)(-temp) : temp;
+
 		if (duplicate) {
 			ESP_LOGD(TAG, "DATA node=%u seq=%u duplicate", nid, rx[2]);
 		} else {
@@ -140,15 +151,19 @@ void app_main(void) {
 			         nid, rx[2], (temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
 			         hum / 100, hum % 100, press);
 		}
+
 		if (!duplicate && (esp_timer_get_time() - s_last_oled_us) >= OLED_MIN_INTERVAL_US) {
-			if ((st->rx_count % 4U) == 0U) {
-				ssd1306_show_network_stats(s_nodes);
+			stat_snapshot_t snap;
+			statistics_snapshot(&snap);
+			if ((snap.rx % 4U) == 0U) {
+				statistics_log();
+				ssd1306_show_link_stats(snap.rx, snap.tx, snap.lost, snap.retries,
+				                        snap.crc_err, snap.unknown,
+				                        snap.node[1].rx, snap.node[2].rx);
 			} else {
 				ssd1306_show_node(nid, temp, hum, get_u16(&rx[9]), "OK");
 			}
 			s_last_oled_us = esp_timer_get_time();
 		}
-		st->last_seq = rx[2];
-		st->have_seq = true;
 	}
 }

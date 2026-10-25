@@ -9,4 +9,5 @@ idf_component_register(
     	freertos
     	ssd1306
     	esp_timer
+    	statistics
 )
