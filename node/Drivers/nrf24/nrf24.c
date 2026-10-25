@@ -119,7 +119,7 @@ static void write_buf(uint8_t reg, const uint8_t *data, uint8_t len) {
 	uint8_t tx[1 + 32] = {0};
 	uint8_t rx[1 + 32] = {0};
 
-	tx[0] = (uint8_t)(NRF24_SPI_CMD_W_REGISTER | reg & 0x1F);
+	tx[0] = (uint8_t)(NRF24_SPI_CMD_W_REGISTER | (reg & 0x1F));
 	memcpy(&tx[1], data, len);
 
 	csn_low();
@@ -193,7 +193,11 @@ void nrf24_power_down(void) {
 void nrf24_set_rx_mode(void){
 	ce_low();
 	nrf24_write_reg(NRF24_REG_CONFIG, NRF24_CONFIG_EN_CRC | NRF24_CONFIG_PWR_UP | NRF24_CONFIG_PRIM_RX);
-	HAL_Delay(2);
+//	HAL_Delay(2);
+	/* ~200 us: RX settling is 130 us. HAL_Delay(2) misses the ACK. */
+	for (volatile uint32_t i = 0; i < (SystemCoreClock / 1000000U) * 50U; i++) {
+		__NOP();
+	}
 	ce_high();
 }
 
@@ -215,11 +219,13 @@ bool nrf24_send(const uint8_t *data, uint8_t len) {
 	nrf24_set_tx_mode();
 	write_payload(data, len);
 	ce_high();
-	HAL_Delay(1);
+	for (volatile uint32_t i = 0; i < (SystemCoreClock / 1000000U) * 5U; i++) {
+		__NOP();
+	}
 	ce_low();
 
 	start = HAL_GetTick();
-	while((HAL_GetTick() - start) < 10U) {
+	while ((HAL_GetTick() - start) < 10U) {
 		const uint8_t status = nrf24_read_reg(NRF24_REG_STATUS);
 		if (status & NRF24_STATUS_TX_DS) {
 			nrf24_write_reg(NRF24_REG_STATUS, NRF24_STATUS_TX_DS);
@@ -233,6 +239,12 @@ bool nrf24_send(const uint8_t *data, uint8_t len) {
 	}
 
 	return false;
+}
+
+void nrf24_flush_rx(void)
+{
+	command(NRF24_CMD_FLUSH_RX);
+	nrf24_write_reg(NRF24_REG_STATUS, NRF24_STATUS_RX_DR);
 }
 
 /* Read one packet when RX_DR is set or the RX FIFO is not empty. */

@@ -1,0 +1,4 @@
+../Core/Src/node.c:54:13:node_log	1
+../Core/Src/node.c:61:16:crc8.constprop	4
+../Core/Src/node.c:160:13:node_task	25
+../Core/Src/node.c:294:6:node_start	2
