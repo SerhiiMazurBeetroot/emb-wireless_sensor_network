@@ -4,6 +4,8 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 #define NRF24_REG_CONFIG 0x00
 #define NRF24_REG_EN_AA 0x01
@@ -67,3 +69,9 @@ bool nrf24_send(const uint8_t *data, uint8_t len);
 
 /* Copy one packet into data when the RX FIFO has one. Otherwise false. */
 bool nrf24_receive(uint8_t *data, uint8_t len);
+
+/*
+ * IRQ-driven RX: create a queue of NRF24_PAYLOAD_LEN bytes, then call after
+ * nrf24_radio_init(). A background task drains the FIFO and xQueueSend()s packets.
+ */
+esp_err_t nrf24_rx_start(QueueHandle_t packet_queue);

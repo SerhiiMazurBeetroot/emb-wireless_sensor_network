@@ -161,3 +161,18 @@ void ssd1306_show_error(const char *reason)
     fb_text(0, 2, line);
     fb_flush();
 }
+
+void ssd1306_show_network_stats(const ssd1306_node_stat_t *stats)
+{
+	char line[22];
+
+	fb_clear();
+	fb_text(0, 0, "NET STATS");
+	for (uint8_t id = 1; id <= 2; id++) {
+		snprintf(line, sizeof(line), "N%u RX%lu D%lu", id,
+		         (unsigned long)stats[id].rx_count,
+		         (unsigned long)stats[id].duplicates);
+		fb_text(0, (int)(id * 2), line);
+	}
+	fb_flush();
+}

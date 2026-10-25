@@ -8,4 +8,5 @@ idf_component_register(
     	nvs_flash
     	freertos
     	ssd1306
+    	esp_timer
 )

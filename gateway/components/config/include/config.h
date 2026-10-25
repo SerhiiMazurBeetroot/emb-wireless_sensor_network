@@ -12,6 +12,7 @@
 #define NRF24_PIN_MISO GPIO_NUM_13
 #define NRF24_PIN_CSN GPIO_NUM_10
 #define NRF24_PIN_CE GPIO_NUM_14
+#define NRF24_PIN_IRQ GPIO_NUM_7
 
 /* Start at 1 MHz for bench wiring; raise after SPI probe passes */
 #define NRF24_SPI_CLOCK_HZ (1 * 1000 * 1000)
