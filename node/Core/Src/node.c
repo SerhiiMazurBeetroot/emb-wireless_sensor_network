@@ -97,9 +97,62 @@ static bool ack_matches(const uint8_t *pkt, uint8_t seq)
 	       pkt[2] == seq;
 }
 
+static void battery_adc_init(void)
+{
+	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+	RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
+	(void)RCC->APB2ENR;
+
+	GPIOA->MODER |= (3U << (1U * 2U));
+	GPIOA->PUPDR &= ~(3U << (1U * 2U));
+
+	ADC1_COMMON->CCR = (ADC1_COMMON->CCR & ~ADC_CCR_ADCPRE) | ADC_CCR_ADCPRE_0;
+	ADC1->CR1 = 0;
+	ADC1->CR2 = 0;
+	ADC1->SMPR2 |= ADC_SMPR2_SMP1;
+	ADC1->SQR1 = 0;
+	ADC1->SQR3 = 1U;
+	ADC1->CR2 = ADC_CR2_ADON;
+
+	for (volatile uint32_t i = 0; i < 500U; i++) {
+	}
+}
+
 static uint16_t read_battery_mv(void)
 {
-	return 0;
+	static bool ready;
+
+	if(!ready) {
+		battery_adc_init();
+		ready = true;
+	}
+
+	uint32_t sum = 0;
+	uint8_t got = 0;
+
+	for(uint8_t i = 0; i < 8U; i++) {
+		ADC1->SR = 0;
+		ADC1->CR2 |= ADC_CR2_SWSTART;
+
+		uint16_t raw = 0;
+		for(uint32_t n = 0; n < 100000U; n++) {
+			if((ADC1->SR & ADC_SR_EOC) != 0U) {
+				raw = (uint16_t)ADC1->DR;
+				break;
+			}
+		}
+		if(raw == 0U) {
+			continue;
+		}
+		sum += raw;
+		got++;
+	}
+
+	if(got == 0U) {
+		return 0;
+	}
+
+	return (uint16_t)((sum / got) * 6600UL / 4095UL);
 }
 
 /* Re-init SPI2 + nRF24 after STOP (clocks/GPIO may need refresh). */
@@ -201,7 +254,10 @@ static void node_task(void *arg)
 			break;
 
 		case NODE_STATE_READ_BATTERY:
+			char buf[32];
 			s_bat_mv = read_battery_mv();
+			snprintf(buf, sizeof(buf), "node: BAT %u mV\r\n", s_bat_mv);
+			node_log(buf);
 			s_state = NODE_STATE_BUILD;
 			break;
 
