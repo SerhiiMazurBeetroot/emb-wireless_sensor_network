@@ -68,3 +68,7 @@ cmake-build-*/
 # macOS / OS Temp Files
 .DS_Store
 Thumbs.db
+
+# CubeIDE build configurations
+Node1/
+Node2/

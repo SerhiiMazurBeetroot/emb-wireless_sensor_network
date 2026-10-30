@@ -36,6 +36,8 @@ typedef enum {
 } node_state_t;
 
 static bool s_radio_ready;
+static bool s_sensor_ready;
+static volatile bool s_rtc_woke;
 static uint8_t s_seq;
 static uint8_t s_attempt;
 static uint32_t s_packets_lost;
@@ -47,7 +49,7 @@ static uint16_t s_bat_mv;
 
 static uint8_t s_tx[NRF24_PAYLOAD_LEN];
 static uint8_t s_rx[NRF24_PAYLOAD_LEN];
-static TickType_t s_ack_deadline;
+static TickType_t s_ack_start;
 
 static node_state_t s_state = NODE_STATE_INIT;
 
@@ -179,24 +181,41 @@ static void node_deep_sleep(uint32_t seconds)
 
 	nrf24_power_down();
 
+	vTaskSuspendAll();
+	s_rtc_woke = false;
 	if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wake_ticks, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) !=
 	    HAL_OK) {
 		Error_Handler();
 	}
 
-	HAL_SuspendTick();
-	HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
-	HAL_ResumeTick();
+	/* A pending SysTick or any other IRQ ends WFI early, so sleep until the RTC fires. */
+	SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
+	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
+	while (!s_rtc_woke) {
+		HAL_SuspendTick();
+		HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+		HAL_ResumeTick();
+		SystemClock_Config();
+	}
+	SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
 
-	SystemClock_Config();
 	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+	(void)xTaskResumeAll();
+}
+
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *rtc)
+{
+	(void)rtc;
+	s_rtc_woke = true;
 }
 
 static bool sensor_init(void)
 {
+// node 2 only has AHT20
 #if NODE_USE_AHT20
 	return aht20_init();
 #else
+// node 1 has BME280
 	return bme280_init();
 #endif
 }
@@ -217,7 +236,7 @@ static void node_task(void *arg)
 	for (;;) {
 		switch (s_state) {
 		case NODE_STATE_INIT:
-			node_log("node: WSN step 13\r\n");
+			node_log("node: WSN start\r\n");
 			nrf24_init();
 			s_radio_ready = nrf24_spi_probe();
 			if (s_radio_ready) {
@@ -230,12 +249,13 @@ static void node_task(void *arg)
 				node_log("node: SPI probe failed\r\n");
 			}
 
-			if (!sensor_init()) {
-				node_log("node: ERR_SENSOR\r\n");
-				s_radio_ready = false;
+			s_sensor_ready = sensor_init();
+			if (!s_sensor_ready) {
+				node_log("node: ERR_SENSOR init\r\n");
 			}
 
-			s_state = s_radio_ready ? NODE_STATE_READ_SENSOR : NODE_STATE_DEEP_SLEEP;
+			s_state = (s_radio_ready && s_sensor_ready) ? NODE_STATE_READ_SENSOR
+			                                            : NODE_STATE_DEEP_SLEEP;
 			break;
 
 		case NODE_STATE_READ_SENSOR:
@@ -245,21 +265,32 @@ static void node_task(void *arg)
 				break;
 			}
 
+			if (!s_sensor_ready) {
+				s_sensor_ready = sensor_init();
+				if (!s_sensor_ready) {
+					node_log("node: ERR_SENSOR init\r\n");
+					s_state = NODE_STATE_DEEP_SLEEP;
+					break;
+				}
+			}
+
 			if (!sensor_read()) {
-				node_log("node: ERR_SENSOR\r\n");
+				node_log("node: ERR_SENSOR read\r\n");
+				s_sensor_ready = false;
 				s_state = NODE_STATE_DEEP_SLEEP;
 			} else {
 				s_state = NODE_STATE_READ_BATTERY;
 			}
 			break;
 
-		case NODE_STATE_READ_BATTERY:
+		case NODE_STATE_READ_BATTERY: {
 			char buf[32];
 			s_bat_mv = read_battery_mv();
 			snprintf(buf, sizeof(buf), "node: BAT %u mV\r\n", s_bat_mv);
 			node_log(buf);
 			s_state = NODE_STATE_BUILD;
 			break;
+		}
 
 		case NODE_STATE_BUILD:
 			memset(s_tx, 0, sizeof(s_tx));
@@ -294,7 +325,7 @@ static void node_task(void *arg)
 			} else {
 				nrf24_flush_rx();
 				nrf24_set_rx_mode();
-				s_ack_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(PKT_ACK_TIMEOUT_MS);
+				s_ack_start = xTaskGetTickCount();
 				s_state = NODE_STATE_WAIT_ACK;
 			}
 			break;
@@ -307,7 +338,8 @@ static void node_task(void *arg)
 				node_log(buf);
 				s_seq++;
 				s_state = NODE_STATE_DEEP_SLEEP;
-			} else if (xTaskGetTickCount() >= s_ack_deadline) {
+			} else if ((TickType_t)(xTaskGetTickCount() - s_ack_start) >=
+			           pdMS_TO_TICKS(PKT_ACK_TIMEOUT_MS)) {
 				char buf[48];
 				snprintf(buf, sizeof(buf), "node: timeout seq=%u attempt=%u\r\n", s_seq,
 				         s_attempt);

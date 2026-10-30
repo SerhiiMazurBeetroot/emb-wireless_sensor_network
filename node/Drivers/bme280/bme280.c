@@ -205,6 +205,8 @@ bool bme280_read(int16_t *temp_c_x100, uint16_t *hum_pct_x100, uint16_t *press_h
 	spi_write(BME_REG_CTRL_HUM, 0x01);
 	spi_write(BME_REG_CTRL_MEAS, 0x25);
 
+	/* The measuring bit is not set right after the write; x1 T/P/H takes up to 9.3 ms. */
+	HAL_Delay(10);
 	for(int i = 0; i < 20; i++) {
 		uint8_t status = 0;
 

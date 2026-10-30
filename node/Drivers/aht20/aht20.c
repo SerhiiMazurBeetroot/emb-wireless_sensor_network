@@ -19,10 +19,52 @@ static bool aht20_read_bytes(uint8_t *data, uint16_t len)
 	return HAL_I2C_Master_Receive(&hi2c1, AHT20_ADDR, data, len, 100) == HAL_OK;
 }
 
+static void bus_delay(void)
+{
+	for (volatile uint32_t i = 0; i < 50U; i++) {
+		__NOP();
+	}
+}
+
+/* A slave cut off mid-byte can hold SDA low and leave I2C1 stuck BUSY until reset. */
+static void aht20_bus_recover(void)
+{
+	GPIO_InitTypeDef gpio = {0};
+
+	HAL_I2C_DeInit(&hi2c1);
+
+	__HAL_RCC_GPIOB_CLK_ENABLE();
+	gpio.Pin = GPIO_PIN_6 | GPIO_PIN_7;
+	gpio.Mode = GPIO_MODE_OUTPUT_OD;
+	gpio.Pull = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6 | GPIO_PIN_7, GPIO_PIN_SET);
+	HAL_GPIO_Init(GPIOB, &gpio);
+	bus_delay();
+
+	for (int i = 0; i < 9; i++) {
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+		bus_delay();
+		HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+		bus_delay();
+	}
+
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+	bus_delay();
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+	bus_delay();
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+	bus_delay();
+
+	HAL_I2C_Init(&hi2c1);
+}
+
 bool aht20_init(void)
 {
 	uint8_t cmd[] = {0xBE, 0x08, 0x00};
 
+	aht20_bus_recover();
 	HAL_Delay(40);
 	if (!aht20_write(cmd, sizeof(cmd))) {
 		return false;

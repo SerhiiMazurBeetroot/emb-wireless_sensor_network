@@ -208,7 +208,7 @@ void nrf24_set_tx_mode(void) {
 	HAL_Delay(2);
 }
 
-/* Send 5 bytes and wait for TX_DS. False when the radio sets MAX_RT or the wait times out. */
+/* Send one NRF24_PAYLOAD_LEN frame and wait for TX_DS. False when the radio sets MAX_RT or the wait times out. */
 bool nrf24_send(const uint8_t *data, uint8_t len) {
 	uint32_t start;
 
