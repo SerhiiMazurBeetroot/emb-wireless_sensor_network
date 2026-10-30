@@ -10,4 +10,6 @@ idf_component_register(
     	ssd1306
     	esp_timer
     	statistics
+    	config
+    	button
 )

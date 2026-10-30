@@ -8,6 +8,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "button.h"
+#include "config.h"
 #include "nrf24.h"
 #include "nvs_flash.h"
 #include "ssd1306.h"
@@ -23,6 +25,42 @@ static const char *TAG = "gateway";
 #define OLED_MIN_INTERVAL_US 300000
 
 static int64_t s_last_oled_us;
+static bool s_show_stats;
+static uint8_t s_view_nid;
+static int16_t s_view_temp;
+static uint16_t s_view_hum;
+static uint16_t s_view_bat;
+static bool s_view_have_node;
+
+static void oled_show_current(void)
+{
+	if (s_show_stats) {
+		stat_snapshot_t snap;
+
+		statistics_snapshot(&snap);
+		ssd1306_show_link_stats(snap.rx, snap.tx, snap.lost, snap.retries, snap.crc_err,
+		                        snap.unknown, snap.node[1].rx, snap.node[2].rx);
+		return;
+	}
+
+	ssd1306_show_node(s_view_have_node ? s_view_nid : 0, s_view_temp, s_view_hum, s_view_bat,
+	                  "OK");
+}
+
+static void stats_button_poll(void)
+{
+	if (!button_pressed()) {
+		return;
+	}
+
+	s_show_stats = !s_show_stats;
+	ESP_LOGI(TAG, "stats view %s", s_show_stats ? "on" : "off");
+	if (s_show_stats) {
+		statistics_log();
+	}
+	oled_show_current();
+	s_last_oled_us = esp_timer_get_time();
+}
 
 /* CRC-8, poly 0x07, over bytes 0..(NRF24_PAYLOAD_LEN - 2). */
 static uint8_t crc8(const uint8_t *data, uint8_t len) {
@@ -69,7 +107,7 @@ void app_main(void) {
 	}
 	ESP_ERROR_CHECK(err);
 
-	ESP_LOGI(TAG, "WSN gateway — step 14: statistics");
+	ESP_LOGI(TAG, "WSN gateway start");
 	ESP_ERROR_CHECK(nrf24_init());
 
 	if (!nrf24_spi_probe()) {
@@ -91,10 +129,12 @@ void app_main(void) {
 	}
 	ESP_ERROR_CHECK(nrf24_rx_start(rx_q));
 	nrf24_set_rx_mode();
+	button_init(GATEWAY_PIN_STATS);
 	ESP_LOGI(TAG, "RX mode (IRQ), channel 76");
 
 	while (1) {
-		if (xQueueReceive(rx_q, rx, portMAX_DELAY) != pdTRUE) {
+		stats_button_poll();
+		if (xQueueReceive(rx_q, rx, pdMS_TO_TICKS(20)) != pdTRUE) {
 			continue;
 		}
 
@@ -152,17 +192,16 @@ void app_main(void) {
 			         hum / 100, hum % 100, press);
 		}
 
+		if (!duplicate) {
+			s_view_nid = nid;
+			s_view_temp = temp;
+			s_view_hum = hum;
+			s_view_bat = get_u16(&rx[9]);
+			s_view_have_node = true;
+		}
+
 		if (!duplicate && (esp_timer_get_time() - s_last_oled_us) >= OLED_MIN_INTERVAL_US) {
-			stat_snapshot_t snap;
-			statistics_snapshot(&snap);
-			if ((snap.rx % 4U) == 0U) {
-				statistics_log();
-				ssd1306_show_link_stats(snap.rx, snap.tx, snap.lost, snap.retries,
-				                        snap.crc_err, snap.unknown,
-				                        snap.node[1].rx, snap.node[2].rx);
-			} else {
-				ssd1306_show_node(nid, temp, hum, get_u16(&rx[9]), "OK");
-			}
+			oled_show_current();
 			s_last_oled_us = esp_timer_get_time();
 		}
 	}

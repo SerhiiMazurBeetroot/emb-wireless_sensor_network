@@ -22,4 +22,7 @@
 
 #define SSD1306_PIN_SDA GPIO_NUM_8
 #define SSD1306_PIN_SCL GPIO_NUM_9
+
+/* Button to GND. Short press toggles the OLED between the node and statistics. */
+#define GATEWAY_PIN_STATS GPIO_NUM_4
 #define SSD1306_I2C_ADDR 0x3C
