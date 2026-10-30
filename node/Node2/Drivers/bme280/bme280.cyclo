@@ -1,5 +1,0 @@
-../Drivers/bme280/bme280.c:48:13:cs_high	1
-../Drivers/bme280/bme280.c:64:13:spi_read	1
-../Drivers/bme280/bme280.c:56:13:spi_write	1
-../Drivers/bme280/bme280.c:171:6:bme280_init	2
-../Drivers/bme280/bme280.c:195:6:bme280_read	8

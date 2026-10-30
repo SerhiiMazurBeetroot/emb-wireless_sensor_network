@@ -1,2 +1,0 @@
-../Drivers/aht20/aht20.c:22:6:aht20_init	2
-../Drivers/aht20/aht20.c:34:6:aht20_read	5
