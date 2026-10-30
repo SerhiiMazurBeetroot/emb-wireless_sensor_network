@@ -3,7 +3,8 @@ idf_component_register(
 	INCLUDE_DIRS "include"
 	REQUIRES
 		config
-		esp_lcd
 		esp_driver_i2c
+		esp_rom
+		freertos
+		u8g2
 )
-

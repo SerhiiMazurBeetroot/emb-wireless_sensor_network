@@ -1,0 +1,5 @@
+dependencies:
+  # Fonts and drawing for the OLED. Downloaded into managed_components/ on the first build.
+  u8g2:
+    git: https://github.com/olikraus/u8g2.git
+    version: "2.37.1"

@@ -40,3 +40,6 @@ cmake-build-*/
 .settings/
 .project
 .cproject
+
+# Downloaded by the ESP-IDF component manager (u8g2)
+managed_components/
