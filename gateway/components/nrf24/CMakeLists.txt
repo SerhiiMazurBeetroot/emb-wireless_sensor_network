@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES 
     	config
+    	protocol
     	esp_driver_spi
     	esp_driver_gpio
     	driver

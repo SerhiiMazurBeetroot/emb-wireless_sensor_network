@@ -12,4 +12,6 @@ idf_component_register(
     	statistics
     	config
     	button
+    	protocol
+    	esp_rom
 )

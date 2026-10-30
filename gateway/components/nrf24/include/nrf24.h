@@ -6,6 +6,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "protocol.h"
 
 #define NRF24_REG_CONFIG 0x00
 #define NRF24_REG_EN_AA 0x01
@@ -40,7 +41,7 @@
 
 /* Largest payload the chip accepts; SPI transfers add one command byte on top. */
 #define NRF24_MAX_PAYLOAD 32
-#define NRF24_PAYLOAD_LEN 12
+#define NRF24_PAYLOAD_LEN PROTO_FRAME_LEN
 #define NRF24_ADDR_WIDTH 5
 
 
