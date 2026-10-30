@@ -2,6 +2,7 @@
 
 #include "main.h"
 #include "nrf24.h"
+#include "protocol.h"
 
 #if NODE_USE_AHT20
 #include "aht20.h"
@@ -19,10 +20,16 @@ extern RTC_HandleTypeDef hrtc;
 extern UART_HandleTypeDef huart1;
 extern SPI_HandleTypeDef hspi2;
 
-#define PKT_TYPE_DATA 0x01
-#define PKT_TYPE_ACK 0x02
+_Static_assert(PKT_NODE_ID >= PROTO_NODE_ID_MIN && PKT_NODE_ID <= PROTO_NODE_ID_MAX,
+               "PKT_NODE_ID is outside the range the gateway accepts");
+
 #define PKT_RETRY_MAX 3
 #define PKT_ACK_TIMEOUT_MS 200
+/*
+ * Below this the HT7333 can no longer hold the 3.3 V rail, so the radio and
+ * the sensor start to misbehave. Frames then carry PROTO_FLAG_LOW_BAT.
+ */
+#define NODE_LOW_BAT_MV 3400U
 
 typedef enum {
 	NODE_STATE_INIT,
@@ -37,16 +44,27 @@ typedef enum {
 
 static bool s_radio_ready;
 static bool s_sensor_ready;
+static bool s_sensor_err;
 static volatile bool s_rtc_woke;
 static uint8_t s_seq;
 static uint8_t s_attempt;
 static uint32_t s_packets_lost;
+
+/* True until the gateway acknowledges the first frame after reset. */
+static bool s_boot = true;
+/*
+ * Events the gateway cannot see on its own (PROTO_FLAG_PREV_LOST,
+ * PROTO_FLAG_RADIO_ERR). A bit stays set until a frame carrying it is
+ * acknowledged, so a lost frame cannot hide the report.
+ */
+static uint8_t s_pending_flags;
 
 static int16_t s_temp;
 static uint16_t s_hum;
 static uint16_t s_press;
 static uint16_t s_bat_mv;
 
+static proto_frame_t s_frame;
 static uint8_t s_tx[NRF24_PAYLOAD_LEN];
 static uint8_t s_rx[NRF24_PAYLOAD_LEN];
 static TickType_t s_ack_start;
@@ -59,45 +77,6 @@ static void node_log(const char *text)
 }
 
 void SystemClock_Config(void);
-
-static uint8_t crc8(const uint8_t *data, uint8_t len)
-{
-	uint8_t crc = 0x00;
-
-	for (uint8_t i = 0; i < len; i++) {
-		crc ^= data[i];
-		for (uint8_t bit = 0; bit < 8; bit++) {
-			if (crc & 0x80) {
-				crc = (uint8_t)((crc << 1) ^ 0x07);
-			} else {
-				crc = (uint8_t)(crc << 1);
-			}
-		}
-	}
-	return crc;
-}
-
-static bool packet_crc_ok(const uint8_t *pkt)
-{
-	return crc8(pkt, NRF24_PAYLOAD_LEN - 1) == pkt[NRF24_PAYLOAD_LEN - 1];
-}
-
-static void put_u16(uint8_t *p, uint16_t value)
-{
-	p[0] = (uint8_t)value;
-	p[1] = (uint8_t)(value >> 8);
-}
-
-static void packet_seal(uint8_t *pkt)
-{
-	pkt[NRF24_PAYLOAD_LEN - 1] = crc8(pkt, NRF24_PAYLOAD_LEN - 1);
-}
-
-static bool ack_matches(const uint8_t *pkt, uint8_t seq)
-{
-	return packet_crc_ok(pkt) && pkt[0] == PKT_TYPE_ACK && pkt[1] == PKT_NODE_ID &&
-	       pkt[2] == seq;
-}
 
 static void battery_adc_init(void)
 {
@@ -229,6 +208,23 @@ static bool sensor_read(void)
 #endif
 }
 
+/* Flags that describe this cycle, plus any earlier events not yet delivered. */
+static uint8_t build_flags(void)
+{
+	uint8_t flags = s_pending_flags;
+
+	if (s_boot) {
+		flags |= PROTO_FLAG_BOOT;
+	}
+	if (s_sensor_err) {
+		flags |= PROTO_FLAG_SENSOR_ERR;
+	}
+	if (s_bat_mv < NODE_LOW_BAT_MV) {
+		flags |= PROTO_FLAG_LOW_BAT;
+	}
+	return flags;
+}
+
 static void node_task(void *arg)
 {
 	(void)arg;
@@ -254,10 +250,15 @@ static void node_task(void *arg)
 				node_log("node: ERR_SENSOR init\r\n");
 			}
 
-			s_state = (s_radio_ready && s_sensor_ready) ? NODE_STATE_READ_SENSOR
-			                                            : NODE_STATE_DEEP_SLEEP;
+			/* A missing sensor is reported over the air, so only a dead radio skips sending. */
+			s_state = s_radio_ready ? NODE_STATE_READ_SENSOR : NODE_STATE_DEEP_SLEEP;
 			break;
 
+		/*
+		 * The sensor is retried on every wake. If it is still broken the node
+		 * sends a frame anyway, with PROTO_FLAG_SENSOR_ERR and zero readings, so
+		 * the gateway sees the node is alive and counts the sensor error.
+		 */
 		case NODE_STATE_READ_SENSOR:
 			node_radio_wake();
 			if (!s_radio_ready) {
@@ -269,18 +270,21 @@ static void node_task(void *arg)
 				s_sensor_ready = sensor_init();
 				if (!s_sensor_ready) {
 					node_log("node: ERR_SENSOR init\r\n");
-					s_state = NODE_STATE_DEEP_SLEEP;
-					break;
 				}
 			}
 
-			if (!sensor_read()) {
+			if (s_sensor_ready && !sensor_read()) {
 				node_log("node: ERR_SENSOR read\r\n");
 				s_sensor_ready = false;
-				s_state = NODE_STATE_DEEP_SLEEP;
-			} else {
-				s_state = NODE_STATE_READ_BATTERY;
 			}
+
+			s_sensor_err = !s_sensor_ready;
+			if (s_sensor_err) {
+				s_temp = 0;
+				s_hum = 0;
+				s_press = 0;
+			}
+			s_state = NODE_STATE_READ_BATTERY;
 			break;
 
 		case NODE_STATE_READ_BATTERY: {
@@ -292,35 +296,42 @@ static void node_task(void *arg)
 			break;
 		}
 
+		/* Flags are fixed here, so every attempt of one seq reports the same state. */
 		case NODE_STATE_BUILD:
-			memset(s_tx, 0, sizeof(s_tx));
-			s_tx[0] = PKT_TYPE_DATA;
-			s_tx[1] = PKT_NODE_ID;
-			s_tx[2] = s_seq;
-
-			put_u16(&s_tx[3], (uint16_t)s_temp);
-			put_u16(&s_tx[5], s_hum);
-			put_u16(&s_tx[7], s_press);
-			put_u16(&s_tx[9], s_bat_mv);
-			packet_seal(s_tx);
-
+			s_frame = (proto_frame_t){
+				.type = PROTO_TYPE_DATA,
+				.node_id = PKT_NODE_ID,
+				.seq = s_seq,
+				.flags = build_flags(),
+				.temp_c_x100 = s_temp,
+				.hum_pct_x100 = s_hum,
+				.press_hpa = s_press,
+				.bat_mv = s_bat_mv,
+			};
 			s_attempt = 1;
 			s_state = NODE_STATE_SEND;
 			break;
 
+		/* The attempt number changes per send, so the frame and its CRC are re-encoded each time. */
 		case NODE_STATE_SEND: {
-			char buf[96];
+			char buf[112];
 			uint16_t t_abs =
 			    (s_temp < 0) ? (uint16_t)(-s_temp) : (uint16_t)s_temp;
+
+			s_frame.attempt = s_attempt;
+			proto_encode(&s_frame, s_tx);
+
 			snprintf(buf, sizeof(buf),
 			         "node: DATA seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa "
-			         "retry %u/%u\r\n",
+			         "flags=0x%02X retry %u/%u\r\n",
 			         s_seq, (s_temp < 0) ? "-" : "", t_abs / 100, t_abs % 100,
-			         s_hum / 100, s_hum % 100, s_press, s_attempt, PKT_RETRY_MAX);
+			         s_hum / 100, s_hum % 100, s_press, s_frame.flags, s_attempt,
+			         PKT_RETRY_MAX);
 			node_log(buf);
 
 			if (!nrf24_send(s_tx, NRF24_PAYLOAD_LEN)) {
 				node_log("node: TX FAIL\r\n");
+				s_pending_flags |= PROTO_FLAG_RADIO_ERR;
 				s_state = NODE_STATE_RETRY;
 			} else {
 				nrf24_flush_rx();
@@ -331,11 +342,15 @@ static void node_task(void *arg)
 			break;
 		}
 
+		/* An ACK confirms the flags it carried were delivered, so those are cleared. */
 		case NODE_STATE_WAIT_ACK:
-			if (nrf24_receive(s_rx, NRF24_PAYLOAD_LEN) && ack_matches(s_rx, s_seq)) {
+			if (nrf24_receive(s_rx, NRF24_PAYLOAD_LEN) &&
+			    proto_is_ack_for(s_rx, PKT_NODE_ID, s_seq)) {
 				char buf[32];
 				snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", s_seq);
 				node_log(buf);
+				s_boot = false;
+				s_pending_flags &= (uint8_t)~s_frame.flags;
 				s_seq++;
 				s_state = NODE_STATE_DEEP_SLEEP;
 			} else if ((TickType_t)(xTaskGetTickCount() - s_ack_start) >=
@@ -359,6 +374,7 @@ static void node_task(void *arg)
 			} else {
 				char buf[48];
 				s_packets_lost++;
+				s_pending_flags |= PROTO_FLAG_PREV_LOST;
 				snprintf(buf, sizeof(buf), "node: no ACK seq=%u packets_lost=%lu\r\n", s_seq,
 				         (unsigned long)s_packets_lost);
 				node_log(buf);

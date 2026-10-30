@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "protocol.h"
+
 #define NRF24_REG_CONFIG      0x00
 #define NRF24_REG_EN_AA       0x01
 #define NRF24_REG_EN_RXADDR   0x02
@@ -31,7 +33,7 @@
 #define NRF24_CONFIG_EN_CRC  0x08
 #define NRF24_CONFIG_PWR_UP  0x02
 #define NRF24_CONFIG_PRIM_RX 0x01
-#define NRF24_PAYLOAD_LEN 12
+#define NRF24_PAYLOAD_LEN PROTO_FRAME_LEN
 #define NRF24_ADDR_WIDTH  5
 
 #define NRF24_RF_CHANNEL 76
