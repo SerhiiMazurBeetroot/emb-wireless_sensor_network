@@ -32,10 +32,14 @@
 #define NRF24_STATUS_MAX_RT 0x10
 #define NRF24_FIFO_RX_EMPTY 0x01
 
+#define NRF24_CONFIG_MASK_TX_DS 0x20
+#define NRF24_CONFIG_MASK_MAX_RT 0x10
 #define NRF24_CONFIG_EN_CRC 0x08
 #define NRF24_CONFIG_PWR_UP 0x02
 #define NRF24_CONFIG_PRIM_RX 0x01
 
+/* Largest payload the chip accepts; SPI transfers add one command byte on top. */
+#define NRF24_MAX_PAYLOAD 32
 #define NRF24_PAYLOAD_LEN 12
 #define NRF24_ADDR_WIDTH 5
 

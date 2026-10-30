@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -23,6 +24,13 @@ static const char *TAG = "gateway";
 #define PKT_NODE_ID_MAX 0x02U
 /* Min interval between full OLED redraws (I2C + snprintf blocks IDLE). */
 #define OLED_MIN_INTERVAL_US 300000
+/*
+ * Wait this long after a DATA frame before answering with the ACK. The node
+ * needs about 0.4-0.6 ms after its own transmission to flush its FIFO, switch to
+ * RX and let the radio settle; an ACK sent sooner is lost and the node retries.
+ * The gateway stays in RX during the wait, so it can still hear the other node.
+ */
+#define ACK_TURNAROUND_US 1500
 
 static int64_t s_last_oled_us;
 static bool s_show_stats;
@@ -169,6 +177,7 @@ void app_main(void) {
 		ack[1] = rx[1];
 		ack[2] = rx[2];
 		packet_seal(ack);
+		esp_rom_delay_us(ACK_TURNAROUND_US);
 		const bool ack_ok = nrf24_send(ack, NRF24_PAYLOAD_LEN);
 		statistics_on_ack(nid, ack_ok);
 		if (ack_ok) {
