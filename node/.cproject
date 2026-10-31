@@ -64,6 +64,7 @@
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2"/>
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"/>
 									<listOptionValue builtIn="false" value="../Drivers/aht20"/>
+									<listOptionValue builtIn="false" value="../Drivers/ina219"/>
 									<listOptionValue builtIn="false" value="../../common/protocol/include"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.2139054736" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
@@ -159,6 +160,7 @@
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"/>
 									<listOptionValue builtIn="false" value="../Drivers/nrf24"/>
 									<listOptionValue builtIn="false" value="../Drivers/aht20"/>
+									<listOptionValue builtIn="false" value="../Drivers/ina219"/>
 									<listOptionValue builtIn="false" value="../../common/protocol/include"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.2111758927" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
@@ -258,6 +260,7 @@
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"/>
 									<listOptionValue builtIn="false" value="../Drivers/nrf24"/>
 									<listOptionValue builtIn="false" value="../Drivers/aht20"/>
+									<listOptionValue builtIn="false" value="../Drivers/ina219"/>
 									<listOptionValue builtIn="false" value="../../common/protocol/include"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.288646218" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>
@@ -357,6 +360,7 @@
 									<listOptionValue builtIn="false" value="../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F"/>
 									<listOptionValue builtIn="false" value="../Drivers/nrf24"/>
 									<listOptionValue builtIn="false" value="../Drivers/aht20"/>
+									<listOptionValue builtIn="false" value="../Drivers/ina219"/>
 									<listOptionValue builtIn="false" value="../../common/protocol/include"/>
 								</option>
 								<inputType id="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c.906847287" superClass="com.st.stm32cube.ide.mcu.gnu.managedbuild.tool.c.compiler.input.c"/>

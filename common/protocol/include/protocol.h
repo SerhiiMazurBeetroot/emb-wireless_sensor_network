@@ -21,6 +21,11 @@
 #define PROTO_TYPE_DATA 0x01U
 #define PROTO_TYPE_ACK 0x02U
 
+/* Power mode the node used for this sample. An ACK carries the mode the gateway wants next. */
+#define PROTO_MODE_ACTIVE 0U
+#define PROTO_MODE_LIGHT 1U
+#define PROTO_MODE_DEEP 2U
+
 /*
  * DATA flags. BOOT, SENSOR_ERR and LOW_BAT describe the node right now.
  * PREV_LOST and RADIO_ERR report problems the gateway could not see itself;
@@ -47,14 +52,17 @@
 #define PROTO_OFF_HUM 7     /* uint16, 0.01 %RH */
 #define PROTO_OFF_PRESS 9   /* uint16, hPa; 0 when the sensor has no barometer */
 #define PROTO_OFF_BAT 11    /* uint16, mV; 0 when not measured */
-#define PROTO_OFF_CRC 13    /* CRC-8 over every byte before it */
-#define PROTO_FRAME_LEN 14
+#define PROTO_OFF_MODE 13   /* PROTO_MODE_*; in an ACK this is the commanded mode */
+#define PROTO_OFF_CURR 14   /* int32, µA from INA219; 0 when the meter is absent */
+#define PROTO_OFF_VBUS 18   /* uint16, INA219 bus voltage, mV */
+#define PROTO_OFF_CRC 20    /* CRC-8 over every byte before it */
+#define PROTO_FRAME_LEN 21
 
 _Static_assert(PROTO_OFF_CRC + 1 == PROTO_FRAME_LEN, "CRC must be the last byte of the frame");
-_Static_assert(PROTO_FRAME_LEN == 14, "frame size changed: update the README frame description");
+_Static_assert(PROTO_FRAME_LEN == 21, "frame size changed: reflash the gateway and both nodes together");
 _Static_assert(PROTO_FRAME_LEN <= 32, "an nRF24 payload holds at most 32 bytes");
 
-/* One frame in decoded form. ACK frames use only type, node_id, seq and attempt. */
+/* One frame in decoded form. An ACK uses type, node_id, seq, attempt and mode. */
 typedef struct {
 	uint8_t type;
 	uint8_t node_id;
@@ -65,6 +73,9 @@ typedef struct {
 	uint16_t hum_pct_x100;
 	uint16_t press_hpa;
 	uint16_t bat_mv;
+	uint8_t mode;
+	int32_t current_ua;
+	uint16_t vbus_mv;
 } proto_frame_t;
 
 /* CRC-8, polynomial 0x07, initial value 0, no final XOR. */
@@ -92,6 +103,22 @@ static inline uint16_t proto_get_u16(const uint8_t *p)
 	return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
 }
 
+static inline void proto_put_i32(uint8_t *p, int32_t value)
+{
+	uint32_t bits = (uint32_t)value;
+
+	p[0] = (uint8_t)bits;
+	p[1] = (uint8_t)(bits >> 8);
+	p[2] = (uint8_t)(bits >> 16);
+	p[3] = (uint8_t)(bits >> 24);
+}
+
+static inline int32_t proto_get_i32(const uint8_t *p)
+{
+	return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+	                 ((uint32_t)p[3] << 24));
+}
+
 /* Write every field of f into out and append the CRC. */
 static inline void proto_encode(const proto_frame_t *f, uint8_t out[PROTO_FRAME_LEN])
 {
@@ -104,6 +131,9 @@ static inline void proto_encode(const proto_frame_t *f, uint8_t out[PROTO_FRAME_
 	proto_put_u16(&out[PROTO_OFF_HUM], f->hum_pct_x100);
 	proto_put_u16(&out[PROTO_OFF_PRESS], f->press_hpa);
 	proto_put_u16(&out[PROTO_OFF_BAT], f->bat_mv);
+	out[PROTO_OFF_MODE] = f->mode;
+	proto_put_i32(&out[PROTO_OFF_CURR], f->current_ua);
+	proto_put_u16(&out[PROTO_OFF_VBUS], f->vbus_mv);
 	out[PROTO_OFF_CRC] = proto_crc8(out, PROTO_OFF_CRC);
 }
 
@@ -123,17 +153,21 @@ static inline bool proto_decode(const uint8_t in[PROTO_FRAME_LEN], proto_frame_t
 	f->hum_pct_x100 = proto_get_u16(&in[PROTO_OFF_HUM]);
 	f->press_hpa = proto_get_u16(&in[PROTO_OFF_PRESS]);
 	f->bat_mv = proto_get_u16(&in[PROTO_OFF_BAT]);
+	f->mode = in[PROTO_OFF_MODE];
+	f->current_ua = proto_get_i32(&in[PROTO_OFF_CURR]);
+	f->vbus_mv = proto_get_u16(&in[PROTO_OFF_VBUS]);
 	return true;
 }
 
-/* Build the ACK the gateway sends for one DATA frame. */
-static inline void proto_encode_ack(const proto_frame_t *data, uint8_t out[PROTO_FRAME_LEN])
+/* Build the ACK for one DATA frame. mode is the power mode the node should use next. */
+static inline void proto_encode_ack(const proto_frame_t *data, uint8_t mode, uint8_t out[PROTO_FRAME_LEN])
 {
 	const proto_frame_t ack = {
 		.type = PROTO_TYPE_ACK,
 		.node_id = data->node_id,
 		.seq = data->seq,
 		.attempt = data->attempt,
+		.mode = mode,
 	};
 
 	proto_encode(&ack, out);

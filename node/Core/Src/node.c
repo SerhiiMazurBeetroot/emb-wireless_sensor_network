@@ -9,6 +9,7 @@
 #else
 #include "bme280.h"
 #endif
+#include "ina219.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -63,6 +64,10 @@ static int16_t s_temp;
 static uint16_t s_hum;
 static uint16_t s_press;
 static uint16_t s_bat_mv;
+static int32_t s_current_ua;
+static uint16_t s_vbus_mv;
+/* Stays deep until the gateway's ACK names another mode. */
+static uint8_t s_mode = PROTO_MODE_DEEP;
 
 static proto_frame_t s_frame;
 static uint8_t s_tx[NRF24_PAYLOAD_LEN];
@@ -150,15 +155,31 @@ static void node_radio_wake(void)
 	nrf24_flush_rx();
 }
 
+static const char *node_mode_name(uint8_t mode)
+{
+	if (mode == PROTO_MODE_ACTIVE) {
+		return "active";
+	}
+	if (mode == PROTO_MODE_LIGHT) {
+		return "light sleep";
+	}
+	return "deep sleep";
+}
+
 static void node_deep_sleep(uint32_t seconds)
 {
-	char buf[48];
+	char buf[64];
 	uint32_t wake_ticks = (seconds > 0U) ? (seconds - 1U) : 0U;
 
-	snprintf(buf, sizeof(buf), "node: deep sleep %lu s\r\n", (unsigned long)seconds);
+	snprintf(buf, sizeof(buf), "node: %s %lu s\r\n", node_mode_name(s_mode), (unsigned long)seconds);
 	node_log(buf);
-
 	nrf24_power_down();
+
+	/* Active keeps the CPU running. The radio stays down until the next wake. */
+	if (s_mode == PROTO_MODE_ACTIVE) {
+		vTaskDelay(pdMS_TO_TICKS(seconds * 1000U));
+		return;
+	}
 
 	vTaskSuspendAll();
 	s_rtc_woke = false;
@@ -172,9 +193,15 @@ static void node_deep_sleep(uint32_t seconds)
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
 	while (!s_rtc_woke) {
 		HAL_SuspendTick();
-		HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
-		HAL_ResumeTick();
-		SystemClock_Config();
+		if (s_mode == PROTO_MODE_LIGHT) {
+			/* SLEEP stops the CPU and keeps SYSCLK, so the clock is not rebuilt. */
+			HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
+			HAL_ResumeTick();
+		} else {
+			HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+			HAL_ResumeTick();
+			SystemClock_Config();
+		}
 	}
 	SysTick->CTRL |= SysTick_CTRL_TICKINT_Msk;
 
@@ -288,9 +315,26 @@ static void node_task(void *arg)
 			break;
 
 		case NODE_STATE_READ_BATTERY: {
-			char buf[32];
+			char buf[48];
+			static bool ina_up;
+			static bool ina_warned;
+
 			s_bat_mv = read_battery_mv();
-			snprintf(buf, sizeof(buf), "node: BAT %u mV\r\n", s_bat_mv);
+			if (ina219_read(&s_current_ua, &s_vbus_mv)) {
+				if (!ina_up) {
+					node_log("node: INA219 ok\r\n");
+					ina_up = true;
+				}
+				ina_warned = false;
+			} else if (!ina_warned) {
+				node_log("node: INA219 absent\r\n");
+				ina_warned = true;
+				ina_up = false;
+			} else {
+				ina_up = false;
+			}
+			snprintf(buf, sizeof(buf), "node: BAT %u mV INA %ld uA %u mV\r\n", s_bat_mv,
+			         (long)s_current_ua, s_vbus_mv);
 			node_log(buf);
 			s_state = NODE_STATE_BUILD;
 			break;
@@ -307,6 +351,9 @@ static void node_task(void *arg)
 				.hum_pct_x100 = s_hum,
 				.press_hpa = s_press,
 				.bat_mv = s_bat_mv,
+				.mode = s_mode,
+				.current_ua = s_current_ua,
+				.vbus_mv = s_vbus_mv,
 			};
 			s_attempt = 1;
 			s_state = NODE_STATE_SEND;
@@ -346,8 +393,12 @@ static void node_task(void *arg)
 		case NODE_STATE_WAIT_ACK:
 			if (nrf24_receive(s_rx, NRF24_PAYLOAD_LEN) &&
 			    proto_is_ack_for(s_rx, PKT_NODE_ID, s_seq)) {
-				char buf[32];
-				snprintf(buf, sizeof(buf), "node: ACK seq=%u\r\n", s_seq);
+				proto_frame_t ack;
+				char buf[48];
+				if (proto_decode(s_rx, &ack) && ack.mode <= PROTO_MODE_DEEP) {
+					s_mode = ack.mode;
+				}
+				snprintf(buf, sizeof(buf), "node: ACK seq=%u %s\r\n", s_seq, node_mode_name(s_mode));
 				node_log(buf);
 				s_boot = false;
 				s_pending_flags &= (uint8_t)~s_frame.flags;
@@ -397,7 +448,7 @@ static void node_task(void *arg)
 
 void node_start(void)
 {
-	if (xTaskCreate(node_task, "node", 512, NULL, 2, NULL) != pdPASS) {
+	if (xTaskCreate(node_task, "node", 768, NULL, 2, NULL) != pdPASS) {
 		node_log("node: xTaskCreate FAILED\r\n");
 	}
 }
