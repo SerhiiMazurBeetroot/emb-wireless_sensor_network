@@ -13,5 +13,6 @@ idf_component_register(
     	config
     	button
     	protocol
+    	webui
     	esp_rom
 )

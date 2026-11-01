@@ -16,6 +16,7 @@
 #include "protocol.h"
 #include "ssd1306.h"
 #include "statistics.h"
+#include "webui.h"
 
 static const char *TAG = "gateway";
 
@@ -48,7 +49,8 @@ typedef struct {
 _Static_assert(NODE_COUNT <= SSD1306_MAX_NODES, "the OLED layout has room for fewer nodes");
 
 static int64_t s_last_oled_us;
-static bool s_show_stats;
+/* 0 shows the node pages. 1 and 2 are the two link screens, in button order. */
+static uint8_t s_view;
 static node_latest_t s_latest[PROTO_NODE_ID_MAX + 1];
 /* Which node the screen shows (0 = first node id) and since when. */
 static uint8_t s_page;
@@ -76,7 +78,7 @@ static void oled_show_link(const stat_snapshot_t *snap)
 		link.dup[i + 1] = n->dup;
 		link.reboots[i + 1] = n->reboots;
 	}
-	ssd1306_show_link(&link);
+	ssd1306_show_link(&link, (uint8_t)(s_view - 1U));
 }
 
 /* Draw whichever screen is selected: one node, or the link statistics. */
@@ -85,7 +87,7 @@ static void oled_show_current(void)
 	stat_snapshot_t snap;
 
 	statistics_snapshot(&snap);
-	if (s_show_stats) {
+	if (s_view != 0) {
 		oled_show_link(&snap);
 		return;
 	}
@@ -121,9 +123,11 @@ static void stats_button_poll(void)
 		return;
 	}
 
-	s_show_stats = !s_show_stats;
-	ESP_LOGI(TAG, "stats view %s", s_show_stats ? "on" : "off");
-	if (s_show_stats) {
+	s_view = (uint8_t)((s_view + 1U) % (1U + SSD1306_LINK_PAGES));
+	ESP_LOGI(TAG, "oled view %s", s_view == 0 ? "nodes" : (s_view == 1 ? "traffic" : "faults"));
+	if (s_view == 0) {
+		s_page_since_us = esp_timer_get_time();
+	} else {
 		statistics_log();
 	}
 	oled_show_current();
@@ -140,7 +144,7 @@ static void oled_refresh_if_due(void)
 	const int64_t now = esp_timer_get_time();
 	bool redraw = (now - s_last_oled_us) >= OLED_REFRESH_US;
 
-	if (!s_show_stats && (now - s_page_since_us) >= OLED_NODE_PAGE_US) {
+	if (s_view == 0 && (now - s_page_since_us) >= OLED_NODE_PAGE_US) {
 		s_page = (uint8_t)((s_page + 1U) % NODE_COUNT);
 		s_page_since_us = now;
 		redraw = true;
@@ -196,6 +200,7 @@ void app_main(void) {
 	ESP_ERROR_CHECK(nrf24_rx_start(rx_q));
 	nrf24_set_rx_mode();
 	button_init(GATEWAY_PIN_STATS);
+	webui_start();
 	ESP_LOGI(TAG, "RX mode (IRQ), channel 76");
 
 	while (1) {
@@ -223,7 +228,7 @@ void app_main(void) {
 
 		/* Every valid DATA frame gets an ACK, repeats included: the node is still waiting. */
 		const bool duplicate = statistics_on_data(&f, esp_timer_get_time());
-		proto_encode_ack(&f, ack);
+		proto_encode_ack(&f, webui_mode(), ack);
 		esp_rom_delay_us(ACK_TURNAROUND_US);
 		const bool ack_ok = nrf24_send(ack, NRF24_PAYLOAD_LEN);
 		statistics_on_ack(f.node_id, ack_ok);
@@ -243,15 +248,16 @@ void app_main(void) {
 		const int16_t t_abs = (f.temp_c_x100 < 0) ? (int16_t)(-f.temp_c_x100) : f.temp_c_x100;
 		ESP_LOGI(TAG,
 		         "DATA node=%u seq=%u temp=%s%d.%02dC hum=%u.%02u%% press=%uhPa bat=%umV "
-		         "flags=0x%02X attempt=%u",
+		         "current=%lduA vbus=%umV mode=%u flags=0x%02X attempt=%u",
 		         f.node_id, f.seq, (f.temp_c_x100 < 0) ? "-" : "", t_abs / 100, t_abs % 100,
-		         f.hum_pct_x100 / 100, f.hum_pct_x100 % 100, f.press_hpa, f.bat_mv, f.flags,
-		         f.attempt);
+		         f.hum_pct_x100 / 100, f.hum_pct_x100 % 100, f.press_hpa, f.bat_mv,
+		         (long)f.current_ua, f.vbus_mv, f.mode, f.flags, f.attempt);
 		if (f.flags & PROTO_FLAG_BOOT) {
 			ESP_LOGI(TAG, "node %u (re)started", f.node_id);
 		}
 
 		s_latest[f.node_id] = (node_latest_t){.have = true, .frame = f};
+		webui_note(&f);
 		oled_show_node_now(f.node_id);
 	}
 }
