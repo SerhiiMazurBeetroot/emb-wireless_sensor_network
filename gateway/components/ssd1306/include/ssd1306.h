@@ -5,6 +5,8 @@
 
 /* Up to this many nodes get a tab in the header and a column on the link screen. */
 #define SSD1306_MAX_NODES 2
+/* The link view is two screens: traffic, then faults. The button steps through them. */
+#define SSD1306_LINK_PAGES 2
 
 /* What the node screen shows for one node. */
 typedef struct {
@@ -38,6 +40,7 @@ bool ssd1306_init(void);
  * which ones are online; selected is the index of the node to draw.
  */
 void ssd1306_show_node(const ssd1306_node_view_t *nodes, uint8_t count, uint8_t selected);
-void ssd1306_show_link(const ssd1306_link_view_t *link);
+/* page 0 is per-node traffic, page 1 is the fault counters. */
+void ssd1306_show_link(const ssd1306_link_view_t *link, uint8_t page);
 /* A title and one centred line, e.g. while waiting for the first frame. */
 void ssd1306_show_message(const char *title, const char *text);

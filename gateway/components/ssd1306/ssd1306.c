@@ -274,44 +274,68 @@ void ssd1306_show_node(const ssd1306_node_view_t *nodes, uint8_t count, uint8_t 
 	u8g2_SendBuffer(&s_u8g2);
 }
 
-/* One table row: label, then the total and each node right-aligned in their columns. */
-static void draw_link_row(int y, const char *label, const uint32_t *values)
+/* Two node columns. The right edges line up with the "n1" and "n2" marks in the header. */
+static void draw_two(int y, const char *label, uint32_t a, uint32_t b)
 {
-	static const int k_col_right[SSD1306_MAX_NODES + 1] = {70, 99, 127};
 	char text[12];
 
+	u8g2_SetFont(&s_u8g2, u8g2_font_6x10_tr);
 	u8g2_DrawStr(&s_u8g2, 0, y, label);
-	for (int i = 0; i <= SSD1306_MAX_NODES; i++) {
-		snprintf(text, sizeof(text), "%lu", (unsigned long)values[i]);
-		draw_right(k_col_right[i], y, text);
-	}
+	snprintf(text, sizeof(text), "%lu", (unsigned long)a);
+	draw_right(98, y, text);
+	snprintf(text, sizeof(text), "%lu", (unsigned long)b);
+	draw_right(OLED_W, y, text);
 }
 
-void ssd1306_show_link(const ssd1306_link_view_t *link)
+static void draw_one(int y, const char *label, const char *value)
+{
+	u8g2_SetFont(&s_u8g2, u8g2_font_6x10_tr);
+	u8g2_DrawStr(&s_u8g2, 0, y, label);
+	draw_right(OLED_W, y, value);
+}
+
+static void draw_link_traffic(const ssd1306_link_view_t *link)
+{
+	draw_header("Traffic", NULL, 0, -1);
+	u8g2_SetFont(&s_u8g2, u8g2_font_helvB08_tr);
+	draw_right(98, 9, "n1");
+	draw_right(OLED_W, 9, "n2");
+
+	draw_two(26, "rx", link->rx[1], link->rx[2]);
+	draw_two(38, "lost", link->lost[1], link->lost[2]);
+	draw_two(50, "retry", link->retries[1], link->retries[2]);
+	draw_two(62, "dup", link->dup[1], link->dup[2]);
+}
+
+static void draw_link_faults(const ssd1306_link_view_t *link)
 {
 	char text[32];
 
+	draw_header("Faults", NULL, 0, -1);
+
+	snprintf(text, sizeof(text), "%lu", (unsigned long)link->crc_err);
+	draw_one(26, "crc", text);
+	snprintf(text, sizeof(text), "%lu", (unsigned long)link->sensor_err);
+	draw_one(38, "sensor", text);
+	snprintf(text, sizeof(text), "%lu", (unsigned long)link->low_bat);
+	draw_one(50, "battery", text);
+	snprintf(text, sizeof(text), "n1 %lu   n2 %lu", (unsigned long)link->reboots[1],
+	         (unsigned long)link->reboots[2]);
+	draw_one(62, "reboot", text);
+}
+
+void ssd1306_show_link(const ssd1306_link_view_t *link, uint8_t page)
+{
 	if (!s_ready || link == NULL) {
 		return;
 	}
 
 	u8g2_ClearBuffer(&s_u8g2);
-	draw_header("Link", NULL, 0, -1);
-	u8g2_SetFont(&s_u8g2, u8g2_font_5x8_tr);
-	draw_right(70, 9, "all");
-	draw_right(99, 9, "n1");
-	draw_right(127, 9, "n2");
-
-	draw_link_row(21, "rx", link->rx);
-	draw_link_row(29, "lost", link->lost);
-	draw_link_row(37, "retry", link->retries);
-	draw_link_row(45, "dup", link->dup);
-	draw_link_row(53, "reboot", link->reboots);
-
-	snprintf(text, sizeof(text), "crc %lu  sens %lu  bat %lu", (unsigned long)link->crc_err,
-	         (unsigned long)link->sensor_err, (unsigned long)link->low_bat);
-	u8g2_DrawStr(&s_u8g2, 0, 63, text);
-
+	if (page == 0) {
+		draw_link_traffic(link);
+	} else {
+		draw_link_faults(link);
+	}
 	u8g2_SendBuffer(&s_u8g2);
 }
 
