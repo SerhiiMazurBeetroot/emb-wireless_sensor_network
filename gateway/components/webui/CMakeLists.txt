@@ -1,7 +1,7 @@
 idf_component_register(
 	SRCS "webui.c"
 	INCLUDE_DIRS "include"
-	EMBED_FILES "web_page.html"
+	EMBED_FILES "web_page.html" "web_page.css" "web_page.js"
 	REQUIRES
 		esp_http_server
 		esp_wifi

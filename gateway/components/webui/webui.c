@@ -28,6 +28,10 @@ static const char *TAG = "webui";
 
 extern const uint8_t web_page_html_start[] asm("_binary_web_page_html_start");
 extern const uint8_t web_page_html_end[] asm("_binary_web_page_html_end");
+extern const uint8_t web_page_css_start[] asm("_binary_web_page_css_start");
+extern const uint8_t web_page_css_end[] asm("_binary_web_page_css_end");
+extern const uint8_t web_page_js_start[] asm("_binary_web_page_js_start");
+extern const uint8_t web_page_js_end[] asm("_binary_web_page_js_end");
 
 typedef struct {
 	uint32_t t_s;
@@ -187,12 +191,26 @@ void webui_note(const proto_frame_t *frame)
 	xSemaphoreGive(s_lock);
 }
 
+static esp_err_t send_asset(httpd_req_t *req, const char *type, const uint8_t *start, const uint8_t *end)
+{
+	httpd_resp_set_type(req, type);
+	httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+	return httpd_resp_send(req, (const char *)start, (ssize_t)(end - start));
+}
+
 static esp_err_t send_page(httpd_req_t *req)
 {
-	httpd_resp_set_type(req, "text/html");
-	httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-	return httpd_resp_send(req, (const char *)web_page_html_start,
-	                       (ssize_t)(web_page_html_end - web_page_html_start));
+	return send_asset(req, "text/html", web_page_html_start, web_page_html_end);
+}
+
+static esp_err_t send_css(httpd_req_t *req)
+{
+	return send_asset(req, "text/css; charset=utf-8", web_page_css_start, web_page_css_end);
+}
+
+static esp_err_t send_js(httpd_req_t *req)
+{
+	return send_asset(req, "application/javascript; charset=utf-8", web_page_js_start, web_page_js_end);
 }
 
 static esp_err_t send_mode(httpd_req_t *req)
@@ -468,14 +486,15 @@ void webui_start(void)
 
 	httpd_handle_t server = NULL;
 	httpd_config_t http = HTTPD_DEFAULT_CONFIG();
-	http.max_uri_handlers = 8;
+	http.max_uri_handlers = 10;
 	http.stack_size = 8192;
 	http.lru_purge_enable = true;
 	if (httpd_start(&server, &http) != ESP_OK) {
 		ESP_LOGE(TAG, "http start failed");
 		return;
 	}
-	if (!uri(server, "/", HTTP_GET, send_page) || !uri(server, "/api/samples", HTTP_GET, send_samples) ||
+	if (!uri(server, "/", HTTP_GET, send_page) || !uri(server, "/web_page.css", HTTP_GET, send_css) ||
+	    !uri(server, "/web_page.js", HTTP_GET, send_js) || !uri(server, "/api/samples", HTTP_GET, send_samples) ||
 	    !uri(server, "/api/mode", HTTP_GET, send_mode) || !uri(server, "/api/mode", HTTP_POST, set_mode) ||
 	    !uri(server, "/api/export.csv", HTTP_GET, send_csv) || !uri(server, "/api/logs", HTTP_GET, send_logs)) {
 		ESP_LOGE(TAG, "route register failed");
