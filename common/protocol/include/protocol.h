@@ -53,8 +53,8 @@
 #define PROTO_OFF_PRESS 9   /* uint16, hPa; 0 when the sensor has no barometer */
 #define PROTO_OFF_BAT 11    /* uint16, mV; 0 when not measured */
 #define PROTO_OFF_MODE 13   /* PROTO_MODE_*; in an ACK this is the commanded mode */
-#define PROTO_OFF_CURR 14   /* int32, µA from INA219; 0 when the meter is absent */
-#define PROTO_OFF_VBUS 18   /* uint16, INA219 bus voltage, mV */
+#define PROTO_OFF_CURR 14   /* int32, µA: sleep-interval average (INA219); 0 if absent */
+#define PROTO_OFF_VBUS 18   /* uint16, bus mV averaged with current; 0 if absent */
 #define PROTO_OFF_CRC 20    /* CRC-8 over every byte before it */
 #define PROTO_FRAME_LEN 21
 

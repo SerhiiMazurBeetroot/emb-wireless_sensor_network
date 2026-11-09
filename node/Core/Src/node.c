@@ -7,7 +7,7 @@
 #if NODE_USE_AHT20
 #include "aht20.h"
 #else
-#include "bme280.h"
+#include "bme280.h" // node 1 has BME280
 #endif
 #include "ina219.h"
 
@@ -64,8 +64,9 @@ static int16_t s_temp;
 static uint16_t s_hum;
 static uint16_t s_press;
 static uint16_t s_bat_mv;
-static int32_t s_current_ua;
-static uint16_t s_vbus_mv;
+/* INA219: average over the last sleep interval (matches s_mode in the same frame). */
+static int32_t s_ina_frame_ua;
+static uint16_t s_ina_frame_vbus_mv;
 /* Stays deep until the gateway's ACK names another mode. */
 static uint8_t s_mode = PROTO_MODE_DEEP;
 
@@ -166,35 +167,47 @@ static const char *node_mode_name(uint8_t mode)
 	return "deep sleep";
 }
 
-static void node_deep_sleep(uint32_t seconds)
+static int64_t s_ina_sum_i;
+static int64_t s_ina_sum_v;
+static int s_ina_samples;
+
+static void ina_sleep_sample(void)
 {
-	char buf[64];
-	uint32_t wake_ticks = (seconds > 0U) ? (seconds - 1U) : 0U;
+	int32_t ua;
+	uint16_t vmv;
 
-	snprintf(buf, sizeof(buf), "node: %s %lu s\r\n", node_mode_name(s_mode), (unsigned long)seconds);
-	node_log(buf);
-	nrf24_power_down();
-
-	/* Active keeps the CPU running. The radio stays down until the next wake. */
-	if (s_mode == PROTO_MODE_ACTIVE) {
-		vTaskDelay(pdMS_TO_TICKS(seconds * 1000U));
-		return;
+	if (ina219_read(&ua, &vmv)) {
+		s_ina_sum_i += (int64_t)ua;
+		s_ina_sum_v += (int64_t)vmv;
+		s_ina_samples++;
 	}
+}
 
+static void ina_frame_commit(void)
+{
+	if (s_ina_samples > 0) {
+		s_ina_frame_ua = (int32_t)(s_ina_sum_i / s_ina_samples);
+		s_ina_frame_vbus_mv = (uint16_t)(s_ina_sum_v / s_ina_samples);
+	}
+	s_ina_sum_i = 0;
+	s_ina_sum_v = 0;
+	s_ina_samples = 0;
+}
+
+/* One RTC tick (~1 s) in light sleep (SLEEP) or deep sleep (STOP). Radio stays off. */
+static void rtc_sleep_one_second(void)
+{
 	vTaskSuspendAll();
 	s_rtc_woke = false;
-	if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wake_ticks, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) !=
-	    HAL_OK) {
+	if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_CK_SPRE_16BITS) != HAL_OK) {
 		Error_Handler();
 	}
 
-	/* A pending SysTick or any other IRQ ends WFI early, so sleep until the RTC fires. */
 	SysTick->CTRL &= ~SysTick_CTRL_TICKINT_Msk;
 	SCB->ICSR = SCB_ICSR_PENDSTCLR_Msk;
 	while (!s_rtc_woke) {
 		HAL_SuspendTick();
 		if (s_mode == PROTO_MODE_LIGHT) {
-			/* SLEEP stops the CPU and keeps SYSCLK, so the clock is not rebuilt. */
 			HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFI);
 			HAL_ResumeTick();
 		} else {
@@ -207,6 +220,33 @@ static void node_deep_sleep(uint32_t seconds)
 
 	HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
 	(void)xTaskResumeAll();
+}
+
+static void node_deep_sleep(uint32_t seconds)
+{
+	char buf[64];
+	uint32_t t;
+
+	snprintf(buf, sizeof(buf), "node: %s %lu s\r\n", node_mode_name(s_mode), (unsigned long)seconds);
+	node_log(buf);
+	nrf24_power_down();
+
+	s_ina_sum_i = 0;
+	s_ina_sum_v = 0;
+	s_ina_samples = 0;
+
+	if (s_mode == PROTO_MODE_ACTIVE) {
+		for (t = 0; t < seconds; t++) {
+			vTaskDelay(pdMS_TO_TICKS(1000));
+			ina_sleep_sample();
+		}
+	} else {
+		for (t = 0; t < seconds; t++) {
+			rtc_sleep_one_second();
+			ina_sleep_sample();
+		}
+	}
+	ina_frame_commit();
 }
 
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *rtc)
@@ -259,15 +299,18 @@ static void node_task(void *arg)
 	for (;;) {
 		switch (s_state) {
 		case NODE_STATE_INIT:
-			node_log("node: WSN start\r\n");
+			{
+				char buf[48];
+
+				snprintf(buf, sizeof(buf), "node: WSN start, node_id %u\r\n",
+				         (unsigned)PKT_NODE_ID);
+				node_log(buf);
+			}
 			nrf24_init();
 			s_radio_ready = nrf24_spi_probe();
 			if (s_radio_ready) {
 				nrf24_radio_init();
-				char buf[48];
-				snprintf(buf, sizeof(buf), "node: channel 76, node_id %u\r\n",
-				         (unsigned)PKT_NODE_ID);
-				node_log(buf);
+				node_log("node: channel 76\r\n");
 			} else {
 				node_log("node: SPI probe failed\r\n");
 			}
@@ -315,12 +358,17 @@ static void node_task(void *arg)
 			break;
 
 		case NODE_STATE_READ_BATTERY: {
-			char buf[48];
+			char buf[64];
 			static bool ina_up;
 			static bool ina_warned;
+			int32_t probe_ua;
+			uint16_t probe_v;
+			bool ina_present;
 
 			s_bat_mv = read_battery_mv();
-			if (ina219_read(&s_current_ua, &s_vbus_mv)) {
+			ina_present = (s_ina_frame_ua != 0 || s_ina_frame_vbus_mv != 0) ||
+			              ina219_read(&probe_ua, &probe_v);
+			if (ina_present) {
 				if (!ina_up) {
 					node_log("node: INA219 ok\r\n");
 					ina_up = true;
@@ -333,8 +381,8 @@ static void node_task(void *arg)
 			} else {
 				ina_up = false;
 			}
-			snprintf(buf, sizeof(buf), "node: BAT %u mV INA %ld uA %u mV\r\n", s_bat_mv,
-			         (long)s_current_ua, s_vbus_mv);
+			snprintf(buf, sizeof(buf), "node: BAT %u mV INA avg %ld uA %u mV (%s)\r\n", s_bat_mv,
+			         (long)s_ina_frame_ua, s_ina_frame_vbus_mv, node_mode_name(s_mode));
 			node_log(buf);
 			s_state = NODE_STATE_BUILD;
 			break;
@@ -352,8 +400,8 @@ static void node_task(void *arg)
 				.press_hpa = s_press,
 				.bat_mv = s_bat_mv,
 				.mode = s_mode,
-				.current_ua = s_current_ua,
-				.vbus_mv = s_vbus_mv,
+				.current_ua = s_ina_frame_ua,
+				.vbus_mv = s_ina_frame_vbus_mv,
 			};
 			s_attempt = 1;
 			s_state = NODE_STATE_SEND;
